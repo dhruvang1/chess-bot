@@ -3,6 +3,7 @@
 #include <sstream>
 #include <vector>
 #include <set>
+#include <array>
 #include "search.cpp"
 
 using namespace std;
@@ -13,6 +14,24 @@ class Uci {
     Board board;
     Search search;
     int moves = 0;
+    static inline string openings[12][2] = {
+            // e4 opening
+            {"e2e4", "e7e5"},
+            {"e2e4", "c7c5"},
+            {"e2e4", "b2b3"},
+            // d4 opening
+            {"d2d4", "d7d5"},
+            {"d2d4", "g8f6"},
+            {"d2d4", "g7g6"},
+            // nf3 opening
+            {"g1f3", "d7d5"},
+            {"g1f3", "b7b6"},
+            {"g1f3", "g8f6"},
+            // nc3 opening
+            {"b1c3", "d7d5"},
+            {"b1c3", "g8f6"},
+            {"b1c3", "g7g6"},
+    };
 
 
     vector<string> tokenize(const string &msg) {
@@ -23,6 +42,11 @@ class Uci {
             tokens.push_back(word);
         }
         return tokens;
+    }
+
+    inline bool isManual() {
+        auto isManual = getenv("manual");
+        return isManual != nullptr && strcmp(isManual, "1") == 0;
     }
 
     public:
@@ -57,18 +81,32 @@ class Uci {
 
             cout << "info score cp " << board.eval << endl;
         } else if (tokens[0] == "go") {
-            int whiteTime = 1000 * 1000;
-            int blackTime = 1000 * 1000;
+            int whiteTime = 60 * 1000;
+            int blackTime = 60 * 1000;
 
-            if (tokens[1] == "wtime") {
+            int whiteInc = 0;
+            int blackInc = 0;
+
+            if (tokens.size() > 2 && tokens[1] == "wtime") {
                 whiteTime = stoi(tokens[2]);
             }
-            if (tokens[3] == "btime") {
+            if (tokens.size() > 4 && tokens[3] == "btime") {
                 blackTime = stoi(tokens[4]);
-
+            }
+            if (tokens.size() > 6 && tokens[5] == "winc") {
+                whiteInc = stoi(tokens[6]);
+            }
+            if (tokens.size() > 8 && tokens[7] == "binc") {
+                blackInc = stoi(tokens[8]);
             }
 
-            string bestMove = search.getBestMove(board, whiteTime, blackTime);
+            string bestMove = "";
+            if (board.prevMoves.empty()) {
+                bestMove = openings[rand() % 12][0];
+            } else {
+                bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
+            }
+
             board.processMove(bestMove);
             moves++;
 
@@ -91,8 +129,7 @@ class Uci {
             cout << endl;
         }
 
-        auto showBoard = getenv("showBoard");
-        if(showBoard != nullptr and strcmp(getenv("showBoard"), "1") == 0) {
+        if(isManual()) {
             cout << board.printBoard() << endl;
         }
     }
