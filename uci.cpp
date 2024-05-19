@@ -117,13 +117,7 @@ class Uci {
             moves--;
         } else if (tokens[0] == "legal") {
             vector<string> legalMoveList = board.getLegalMoves();
-            set<string> legalMoveSet(legalMoveList.begin(), legalMoveList.end());
-
-            if (legalMoveList.size() != legalMoveSet.size()) {
-                cout << "Size don't match - Set: " << legalMoveSet.size() << " List: " << legalMoveList.size() << endl;
-            }
-
-            for(auto& m : legalMoveSet) {
+            for(auto& m : legalMoveList) {
                 cout << m << ", ";
             }
             cout << endl;

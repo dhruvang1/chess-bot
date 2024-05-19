@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 #include <set>
 #include <sstream>
@@ -23,7 +24,7 @@ class Search {
         string moves;
         Node(int eval, string moves) {
             this->eval = eval;
-            this->moves = moves;
+            this->moves = std::move(moves);
         }
     };
 
@@ -104,14 +105,29 @@ class Search {
             return { board.turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
         }
 
-        if (depth == 0) {
-            int jitter = 0;
-            // +- 10% eval jitter after 16 ply
-            if (abs(board.eval) > 5 && board.prevMoves.size() > 16) {
-                jitter = rand() % (board.eval / 5);
-                jitter -= jitter / 2;
+        // trivial quick check for threefold repetition (not fully correct, but I think should be fine)
+        if (board.prevMoves.size() >= 8) {
+            int lastElem = board.prevMoves.size() - 1;
+            if (board.prevMoves[lastElem] == board.prevMoves[lastElem - 4] &&
+                board.prevMoves[lastElem - 2] == board.prevMoves[lastElem - 6] &&
+                board.prevMoves[lastElem - 1] == board.prevMoves[lastElem - 5] &&
+                board.prevMoves[lastElem - 3] == board.prevMoves[lastElem - 7]
+            ){
+                // give stalemate eval with same logic, maybe a slightly lower eval is better. Will do later.
+                return { board.turn == Board::WHITE ? (Board::stalemateEval + depth): -(Board::stalemateEval + depth), ""};
             }
-            return {board.eval + jitter, ""};
+        }
+
+        if (depth == 0) {
+            // We probably don't need to add jitter with 3 fold check above
+//            int jitter = 0;
+//            // +- 10% eval jitter after 16 ply
+//            if (abs(board.eval) > 5 && board.prevMoves.size() > 16) {
+//                jitter = rand() % (board.eval / 5);
+//                jitter -= jitter / 2;
+//            }
+//            return {board.eval + jitter, ""};
+            return {board.eval, ""};
         }
 
         if (shouldQuit()) {

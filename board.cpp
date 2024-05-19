@@ -181,7 +181,7 @@ public:
 
         // simple now, captures before non captures.
         vector<string> remaining;
-        vector<string> capture;
+        vector<pair<int, string>> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
         vector<string> castle;
         vector<string> promotion;
 
@@ -200,7 +200,7 @@ public:
                                 if (board[newI][newJ] == ' ') {
                                     remaining.push_back(encode(i, j, newI, newJ));
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                 }
                             }
                         }
@@ -228,7 +228,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                     break;
                                 }
                             }
@@ -256,7 +256,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                     break;
                                 }
                             }
@@ -284,7 +284,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                     break;
                                 }
                             }
@@ -298,7 +298,7 @@ public:
                                 if (board[newI][newJ] == ' ') {
                                     remaining.push_back(encode(i, j, newI, newJ));
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                 }
                             }
                         }
@@ -348,8 +348,9 @@ public:
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'n'));
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'b'));
                                 } else {
-                                    capture.push_back(encode(i, j, newI, newJ));
+                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                 }
+                                continue; // a normal capture or promotion => no en-passant
                             }
 
                             // en-passant
@@ -366,7 +367,7 @@ public:
 
                                 // A pawn moved 2 squares in the same column as current capture attempt
                                 if (isPawn(board[currRow][currCol]) && abs(currRow - prevRow) == 2 && currCol == newJ) {
-                                        capture.push_back(encode(i, j, newI, newJ));
+                                        capture.emplace_back(0, encode(i, j, newI, newJ));
                                 }
                             }
                         }
@@ -381,8 +382,21 @@ public:
             promotion.push_back(move);
         }
 
+        // white wants ascending sorting & black wants descending sorting
+        bool ascending = turn == WHITE;
+
+        if (capture.size() > 1) {
+            std::sort(capture.begin(), capture.end(), [&ascending](auto &left, auto &right) {
+                if (ascending) {
+                    return left.first < right.first;
+                } else {
+                    return left.first > right.first;
+                }
+            });
+        }
+
         for(auto& move: capture) {
-            promotion.push_back(move);
+            promotion.push_back(move.second);
         }
 
         for(auto& move: remaining) {
@@ -651,7 +665,7 @@ private:
             row = 7;
             ans = blackShortRookMoved == 0 && blackKingMoved == 0 && !attacked[row][4] && !attacked[row][5] && !attacked[row][6];
         }
-        return ans && (board[row][5] == ' ') && (board[row][6] == ' ');
+        return ans && isPieceOfColor(turn, board[row][7]) && isRook(board[row][7]) && (board[row][5] == ' ') && (board[row][6] == ' ');
     }
 
     inline bool canLongCastle(bool attacked[8][8]) {
@@ -664,7 +678,7 @@ private:
             ans = blackLongRookMoved == 0 && blackKingMoved == 0 && !attacked[row][2] && !attacked[row][3] && !attacked[row][4];
         }
 
-        return ans && (board[row][1] == ' ') && (board[row][2] == ' ') && (board[row][3] == ' ');
+        return ans && isPieceOfColor(turn, board[row][0]) && isRook(board[row][0]) && (board[row][1] == ' ') && (board[row][2] == ' ') && (board[row][3] == ' ');
     }
 
     static inline int getEval(Color color, char piece, int row, int col) {
@@ -843,7 +857,7 @@ private:
         {  0,  0,  5,  5,  5,  5,  0, -5},
         {-10,  5,  5,  5,  5,  5,  0,-10},
         {-10,  0,  5,  0,  0,  0,  0,-10},
-        {-20,-10,-10, 15, -5,-10,-10,-20}
+        {-20,-10,-10, 40, -5,-10,-10,-20}
     };
 
     // no king activity
