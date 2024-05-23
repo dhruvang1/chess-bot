@@ -2,7 +2,6 @@
 #include <string>
 #include <sstream>
 #include <vector>
-#include <set>
 #include <array>
 #include "search.cpp"
 
@@ -14,7 +13,8 @@ class Uci {
     Board board;
     Search search;
     int moves = 0;
-    static inline string openings[12][2] = {
+    static const int OPENING_LINES = 9;
+    static inline string openings[OPENING_LINES][2] = {
             // e4 opening
             {"e2e4", "e7e5"},
             {"e2e4", "c7c5"},
@@ -23,14 +23,19 @@ class Uci {
             {"d2d4", "d7d5"},
             {"d2d4", "g8f6"},
             {"d2d4", "g7g6"},
+            // c4 opening
+            {"c2c4", "d7d5"},
+            {"c2c4", "e7e5"},
+            {"c2c4", "g7g6"},
+
             // nf3 opening
-            {"g1f3", "d7d5"},
-            {"g1f3", "b7b6"},
-            {"g1f3", "g8f6"},
+//            {"g1f3", "d7d5"},
+//            {"g1f3", "b7b6"},
+//            {"g1f3", "g8f6"},
             // nc3 opening
-            {"b1c3", "d7d5"},
-            {"b1c3", "g8f6"},
-            {"b1c3", "g7g6"},
+//            {"b1c3", "d7d5"},
+//            {"b1c3", "g8f6"},
+//            {"b1c3", "g7g6"},
     };
 
 
@@ -64,22 +69,23 @@ class Uci {
         } else if (msg == "isready") {
             cout << "readyok" << endl;
         } else if (msg == "ucinewgame") {
-            board.reset();
+            board = Board();
             moves = 0;
         } else if(tokens[0] == "position") {
-            // compare positions and process the new move
+            // debug condition to process new moves
             if(tokens[1] != "startpos") {
-                throw std::invalid_argument( "Cannot understand this msg: " + msg);
-            }
-
-            if (tokens.size() > 3) {
+               for(int i=1;i<tokens.size(); i++) {
+                   board.processMove(tokens[i]);
+                   moves++;
+               }
+            } else if (tokens.size() > 3) {
+                // compare positions and process the new move
                 for(int i = moves + 3; i < tokens.size() ; i++) {
                     board.processMove(tokens[i]);
                     moves++;
                 }
             }
 
-            cout << "info score cp " << board.eval << endl;
         } else if (tokens[0] == "go") {
             int whiteTime = 60 * 1000;
             int blackTime = 60 * 1000;
@@ -100,9 +106,9 @@ class Uci {
                 blackInc = stoi(tokens[8]);
             }
 
-            string bestMove = "";
+            string bestMove;
             if (board.prevMoves.empty()) {
-                bestMove = openings[rand() % 12][0];
+                bestMove = openings[rand() % OPENING_LINES][0];
             } else {
                 bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
             }
@@ -111,12 +117,25 @@ class Uci {
             moves++;
 
             cout << "bestmove " << bestMove << endl;
-            cout << "info score cp " << board.eval << endl;
         } else if (tokens[0] == "undo") {
             board.undoMove();
             moves--;
+        } else if (tokens[0] == "eval") {
+            if (tokens.size() > 1) {
+                Board boardCpy = board;
+                for(int i = 1; i < tokens.size();i++) {
+                    boardCpy.processMove(tokens[i]);
+                    cout << tokens[i] << " " << boardCpy.getBoardEval() << endl;
+                }
+            } else {
+                cout << board.getBoardEval() << endl;
+            }
         } else if (tokens[0] == "legal") {
-            vector<string> legalMoveList = board.getLegalMoves();
+            bool capturesOnly = false;
+            if (tokens.size() > 1 && tokens[1] == "capture") {
+                capturesOnly = true;
+            }
+            vector<string> legalMoveList = board.getLegalMoves(capturesOnly);
             for(auto& m : legalMoveList) {
                 cout << m << ", ";
             }

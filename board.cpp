@@ -1,7 +1,7 @@
 #include <string>
 #include <vector>
-#include <iostream>
 #include <unordered_map>
+#include "staticEvals.cpp"
 
 using namespace std;
 
@@ -13,10 +13,8 @@ public:
     };
 
     Color turn = WHITE;
-    int eval = 0;
 
     vector<string> prevMoves;
-    vector<int> prevEvals;
     vector<char> prevPiece;
 
     static inline int checkmateEval = 15000;
@@ -25,40 +23,10 @@ public:
     public:
 
     Board() {
-        reset();
-    }
-
-    void reset() {
-        for(int i=0;i<8;i++) { // NOLINT(*-loop-convert)
-            for(int j=0;j<8;j++) {
-                board[i][j] = ' ';
-            }
-        }
-
-        for(int i=0;i<8;i++) {
-            board[1][i] = 'P';
-            board[6][i] = 'p';
-        }
-
-        board[0][0] = 'R';
-        board[0][1] = 'N';
-        board[0][2] = 'B';
-        board[0][3] = 'Q';
-        board[0][4] = 'K';
-        board[0][5] = 'B';
-        board[0][6] = 'N';
-        board[0][7] = 'R';
-
-        board[7][0] = 'r';
-        board[7][1] = 'n';
-        board[7][2] = 'b';
-        board[7][3] = 'q';
-        board[7][4] = 'k';
-        board[7][5] = 'b';
-        board[7][6] = 'n';
-        board[7][7] = 'r';
-
-        eval = 0;
+        setup();
+        initPieceValues();
+        initEvalMap();
+        initGamePhaseTable();
     }
 
     void processMove(const string& move) {
@@ -66,9 +34,11 @@ public:
             throw std::invalid_argument( "received move with length not 4/5, move: " + move);
         }
 
+        evalCalculated = false;
+
         // add moves and eval for backtracking
         prevMoves.push_back(move);
-        prevEvals.push_back(eval);
+//        prevEvals.push_back(eval);
 
         // assume the values are valid
         int currCol = move[0] - 'a';
@@ -100,9 +70,9 @@ public:
             // create new piece
             board[newRow][newCol] = newPiece;
 
-            // update eval
-            eval += pieceValue[newPiece] + getEval(turn, newPiece, newRow, newCol);
-            eval -= (pieceValue[gonePiece] + getEval(turn, gonePiece, currRow, currCol));
+//            // update eval
+//            eval += pieceValue[newPiece] + getEval(turn, newPiece, newRow, newCol);
+//            eval -= (pieceValue[gonePiece] + getEval(turn, gonePiece, currRow, currCol));
 
             // delete old pawn
             board[currRow][currCol] = ' ';
@@ -120,7 +90,7 @@ public:
                 // short castle
                 updateShortRookMoved(1);
 
-                eval += getEval(turn, board[currRow][7], currRow, 5) - getEval(turn, board[currRow][7], currRow, 7);
+//                eval += getEval(turn, board[currRow][7], currRow, 5) - getEval(turn, board[currRow][7], currRow, 7);
 
                 board[currRow][5] = board[currRow][7];
                 board[currRow][7] = ' ';
@@ -128,7 +98,7 @@ public:
                 // long castle
                 updateLongRookMoved(1);
 
-                eval += getEval(turn, board[currRow][0], currRow, 3) - getEval(turn, board[currRow][0], currRow, 0);
+//                eval += getEval(turn, board[currRow][0], currRow, 3) - getEval(turn, board[currRow][0], currRow, 0);
 
                 board[currRow][3] = board[currRow][0];
                 board[currRow][0] =  ' ';
@@ -138,8 +108,8 @@ public:
         // update eval from gone piece
         char gonePiece = board[newRow][newCol];
         prevPiece.push_back(gonePiece); // add gone piece for backtracking
-        eval -= pieceValue[gonePiece];
-        eval -= getEval(turn, gonePiece, newRow, newCol);
+//        eval -= pieceValue[gonePiece];
+//        eval -= getEval(turn, gonePiece, newRow, newCol);
 
         // book keeping rook & king moves for castling
         if (isKing(movedPiece)) {
@@ -158,8 +128,8 @@ public:
             // Remove the captured pawn eval, it won't be covered by above eval
             char disappearedPawn = board[currRow][newCol];
 
-            eval -= pieceValue[disappearedPawn];
-            eval -= getEval(turn, disappearedPawn, currRow, newCol);
+//            eval -= pieceValue[disappearedPawn];
+//            eval -= getEval(turn, disappearedPawn, currRow, newCol);
 
             // remove the captured pawn
             board[currRow][newCol] = ' ';
@@ -167,7 +137,7 @@ public:
 
 
         // update eval because of moved piece
-        eval += (getEval(turn, movedPiece, newRow, newCol) - getEval(turn, movedPiece, currRow, currCol));
+//        eval += (getEval(turn, movedPiece, newRow, newCol) - getEval(turn, movedPiece, currRow, currCol));
 
 
         // update board
@@ -177,8 +147,76 @@ public:
         turn = turn == WHITE ? BLACK : WHITE;
     }
 
-    vector<string> getLegalMoves() {
+    void undoMove() {
+        if (prevMoves.empty()) {
+            throw std::invalid_argument("cannot undo from empty list");
+        }
+        evalCalculated = false;
 
+//        eval = prevEvals[prevEvals.size() - 1];
+        turn = turn == WHITE ? BLACK : WHITE; // flip turn before to mimic the correct side making an undo move
+
+        char gonePiece = prevPiece[prevPiece.size() - 1];
+        string lastMove = prevMoves[prevMoves.size() - 1];
+
+//        prevEvals.pop_back();
+        prevPiece.pop_back();
+        prevMoves.pop_back();
+
+        // assume the values are valid
+        int prevCol = lastMove[0] - 'a';
+        int prevRow = lastMove[1] - '0' - 1;
+        int currCol = lastMove[2] - 'a';
+        int currRow = lastMove[3] - '0' - 1;
+
+        // handle promotion
+        if (lastMove.length() == 5) {
+            board[prevRow][prevCol] = turn == WHITE ? 'P' : 'p';
+            board[currRow][currCol] = gonePiece;
+
+            return;
+        }
+
+        // handle castling
+        if(isKing(board[currRow][currCol]) && (prevRow == currRow) && (abs(prevCol - currCol) == 2)) {
+            // update rook position
+            if (currCol > prevCol) {
+                // short castle
+                updateShortRookMoved(-1);
+                board[prevRow][7] = board[prevRow][5];
+                board[prevRow][5] = ' ';
+            } else {
+                // long castle
+                updateLongRookMoved(-1);
+                board[prevRow][0] = board[prevRow][3];
+                board[prevRow][3] =  ' ';
+            }
+        }
+
+        // book keeping rook & king moves for castling
+        char movedPiece = board[currRow][currCol];
+        if (isKing(movedPiece)) {
+            updateKingMoved(-1);
+        } else if (isRook(movedPiece)) {
+            if (isRookAtShortHome(turn, prevRow, prevCol)) {
+                updateShortRookMoved(-1);
+            } else if (isRookAtLongHome(turn, prevRow, prevCol)) {
+                updateLongRookMoved(-1);
+            }
+        }
+
+        // handle en-passant
+        // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
+        if (isPawn(movedPiece) && abs(prevCol - currCol) == 1 && gonePiece == ' ') {
+            // restore previous pawn
+            board[prevRow][currCol] = turn == WHITE ? 'p' : 'P';
+        }
+
+        board[prevRow][prevCol] = board[currRow][currCol];
+        board[currRow][currCol] = gonePiece;
+    }
+
+    vector<string> getLegalMoves(bool capturesOnly) {
         // simple now, captures before non captures.
         vector<string> remaining;
         vector<pair<int, string>> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
@@ -200,7 +238,11 @@ public:
                                 if (board[newI][newJ] == ' ') {
                                     remaining.push_back(encode(i, j, newI, newJ));
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    if (attacked[newI][newJ]) {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    } else{
+                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
+                                    }
                                 }
                             }
                         }
@@ -228,7 +270,11 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    if (attacked[newI][newJ]) {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    } else {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
+                                    }
                                     break;
                                 }
                             }
@@ -256,7 +302,11 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    if (attacked[newI][newJ]) {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    } else {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
+                                    }
                                     break;
                                 }
                             }
@@ -284,7 +334,11 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    if (attacked[newI][newJ]) {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    } else {
+                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
+                                    }
                                     break;
                                 }
                             }
@@ -321,6 +375,7 @@ public:
                             }
                         }
 
+
                         int newI = turn == WHITE ? i + 1 : i - 1;
                         int newJ = j;
                         // push one square if its empty
@@ -347,8 +402,10 @@ public:
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'r'));
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'n'));
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'b'));
-                                } else {
+                                } else if (attacked[newI][newJ]){
                                     capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                } else {
+                                    capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
                                 }
                                 continue; // a normal capture or promotion => no en-passant
                             }
@@ -367,7 +424,11 @@ public:
 
                                 // A pawn moved 2 squares in the same column as current capture attempt
                                 if (isPawn(board[currRow][currCol]) && abs(currRow - prevRow) == 2 && currCol == newJ) {
+                                    if(attacked[newI][newJ]) {
                                         capture.emplace_back(0, encode(i, j, newI, newJ));
+                                    } else {
+                                        capture.emplace_back(pieceValue[board[currRow][currCol]], encode(i, j, newI, newJ));
+                                    }
                                 }
                             }
                         }
@@ -378,8 +439,10 @@ public:
         }
 
         // merge vectors
-        for(auto& move: castle) {
-            promotion.push_back(move);
+        if (!capturesOnly) {
+            for(auto& move: castle) {
+                promotion.push_back(move);
+            }
         }
 
         // white wants ascending sorting & black wants descending sorting
@@ -399,8 +462,10 @@ public:
             promotion.push_back(move.second);
         }
 
-        for(auto& move: remaining) {
-            promotion.push_back(move);
+        if (!capturesOnly) {
+            for(auto& move: remaining) {
+                promotion.push_back(move);
+            }
         }
 
         return promotion;
@@ -517,76 +582,85 @@ public:
         }
     }
 
-    void undoMove() {
-        if (prevMoves.empty()) {
-            throw std::invalid_argument("cannot undo from empty list");
+    int getBoardEval() {
+        if (evalCalculated) {
+            return eval;
         }
 
-        eval = prevEvals[prevEvals.size() - 1];
-        turn = turn == WHITE ? BLACK : WHITE; // flip turn before to mimic the correct side making an undo move
+        eval = 0;
+        int mgEval = 0;
+        int egEval = 0;
+        int mobility = 0;
+        int gamePhase = 0;
+        int whitePawns[8]{};
+        int blackPawns[8]{};
 
-        char gonePiece = prevPiece[prevPiece.size() - 1];
-        string lastMove = prevMoves[prevMoves.size() - 1];
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                char c = board[i][j];
+                if (c == ' ') {
+                    continue;
+                }
 
-        prevEvals.pop_back();
-        prevPiece.pop_back();
-        prevMoves.pop_back();
+                mgEval += pieceValue[c] + evalTable[c][0][i][j];
+                egEval += pieceValue[c] + evalTable[c][1][i][j];
+                gamePhase += gamePhaseTable[c];
+                if (isPawn(c)) {
+                    isPieceOfColor(WHITE, c) ? whitePawns[j]++ : blackPawns[j]++;
+                }
 
-        // assume the values are valid
-        int prevCol = lastMove[0] - 'a';
-        int prevRow = lastMove[1] - '0' - 1;
-        int currCol = lastMove[2] - 'a';
-        int currRow = lastMove[3] - '0' - 1;
-
-        // handle promotion
-        if (lastMove.length() == 5) {
-            board[prevRow][prevCol] = turn == WHITE ? 'P' : 'p';
-            board[currRow][currCol] = gonePiece;
-
-            return;
-        }
-
-        // handle castling
-        if(isKing(board[currRow][currCol]) && (prevRow == currRow) && (abs(prevCol - currCol) == 2)) {
-            // update rook position
-            if (currCol > prevCol) {
-                // short castle
-                updateShortRookMoved(-1);
-                board[prevRow][7] = board[prevRow][5];
-                board[prevRow][5] = ' ';
-            } else {
-                // long castle
-                updateLongRookMoved(-1);
-                board[prevRow][0] = board[prevRow][3];
-                board[prevRow][3] =  ' ';
+                // mobility
+//                mobility += isPieceOfColor(WHITE, c) ? getMobilityScore(i, j): -getMobilityScore(i, j);
             }
         }
 
-        // book keeping rook & king moves for castling
-        char movedPiece = board[currRow][currCol];
-        if (isKing(movedPiece)) {
-            updateKingMoved(-1);
-        } else if (isRook(movedPiece)) {
-            if (isRookAtShortHome(turn, prevRow, prevCol)) {
-                updateShortRookMoved(-1);
-            } else if (isRookAtLongHome(turn, prevRow, prevCol)) {
-                updateLongRookMoved(-1);
+        // handle early promotion
+        if (gamePhase > 24)
+            gamePhase = 24;
+
+        eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
+
+        // Doubled & isolated pawns don't matter much in opening
+        int doubledPawnsPenalty = (gamePhase * 5 + (24 - gamePhase) * 2) / 24;
+        int isolatedPawnsPenalty = (gamePhase * 4 + (24 - gamePhase) * 2) / 24;
+
+        // process pawns
+        for(int i=0;i<8;i++) {
+            if (whitePawns[i] >= 1) {
+                // doubled pawns
+                eval -= (pieceValue['P'] * (whitePawns[i] - 1))/doubledPawnsPenalty;
+
+                // isolated pawns
+                bool isolated = true;
+                if ((i > 0 && whitePawns[i-1] > 0) || (i < 7 && whitePawns[i+1] > 0)){
+                    isolated = false;
+                }
+                if (isolated)
+                    eval -= (pieceValue['P'] * whitePawns[i])/isolatedPawnsPenalty;
+            }
+
+            if (blackPawns[i] >= 1) {
+                // doubled pawns
+                eval -= (pieceValue['p'] * (blackPawns[i] - 1))/doubledPawnsPenalty;
+
+                // isolated pawns
+                bool isolated = true;
+                if ((i > 0 && blackPawns[i-1] > 0) || (i < 7 && blackPawns[i+1] > 0)){
+                    isolated = false;
+                }
+                if (isolated)
+                    eval -= (pieceValue['p'] * blackPawns[i])/isolatedPawnsPenalty;
             }
         }
 
-        // handle en-passant
-        // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
-        if (isPawn(movedPiece) && abs(prevCol - currCol) == 1 && gonePiece == ' ') {
-            // restore previous pawn
-            board[prevRow][currCol] = turn == WHITE ? 'p' : 'P';
-        }
+        evalCalculated = true;
 
-        board[prevRow][prevCol] = board[currRow][currCol];
-        board[currRow][currCol] = gonePiece;
+        return eval;
     }
 
-    bool isCheckmate() const {
-        return eval > checkmateEval || eval < -checkmateEval;
+    bool isCheckmate() {
+        int boardEval = getBoardEval();
+        return boardEval > checkmateEval || boardEval < -checkmateEval;
     }
 
     string printBoard() {
@@ -619,6 +693,117 @@ private:
     int blackShortRookMoved = 0;
     int blackLongRookMoved = 0;
     int blackKingMoved = 0;
+
+    bool evalCalculated = false;
+    int eval = 0;
+    int evalTable[256][2][8][8]{}; // piece, middle game/ end game, row, col
+    int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
+    int pieceValue[256]{};
+
+    void setup() {
+        for(int i=0;i<8;i++) { // NOLINT(*-loop-convert)
+            for(int j=0;j<8;j++) {
+                board[i][j] = ' ';
+            }
+        }
+
+        for(int i=0;i<8;i++) {
+            board[1][i] = 'P';
+            board[6][i] = 'p';
+        }
+
+        board[0][0] = 'R';
+        board[0][1] = 'N';
+        board[0][2] = 'B';
+        board[0][3] = 'Q';
+        board[0][4] = 'K';
+        board[0][5] = 'B';
+        board[0][6] = 'N';
+        board[0][7] = 'R';
+
+        board[7][0] = 'r';
+        board[7][1] = 'n';
+        board[7][2] = 'b';
+        board[7][3] = 'q';
+        board[7][4] = 'k';
+        board[7][5] = 'b';
+        board[7][6] = 'n';
+        board[7][7] = 'r';
+    }
+
+    void initPieceValues() {
+        pieceValue['p'] = -100;
+        pieceValue['r'] = -500;
+        pieceValue['n'] = -320;
+        pieceValue['b'] = -325;
+        pieceValue['q'] = -900;
+        pieceValue['k'] = -20000;
+
+        pieceValue['P'] = 100;
+        pieceValue['R'] = 500;
+        pieceValue['N'] = 320;
+        pieceValue['B'] = 325;
+        pieceValue['Q'] = 900;
+        pieceValue['K'] = 20000;
+
+        pieceValue[' '] = 0;
+    }
+
+    void initEvalMap() {
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                evalTable['P'][0][i][j] = mg_pawn_table[(7 - i)*8 + j];
+                evalTable['R'][0][i][j] = mg_rook_table[(7 - i)*8 + j];
+                evalTable['N'][0][i][j] = mg_knight_table[(7 - i)*8 + j];
+                evalTable['B'][0][i][j] = mg_bishop_table[(7 - i)*8 + j];
+                evalTable['Q'][0][i][j] = mg_queen_table[(7 - i)*8 + j];
+                evalTable['K'][0][i][j] = mg_king_table[(7 - i)*8 + j];
+
+                evalTable['p'][0][i][j] = -mg_pawn_table[i*8 + j];
+                evalTable['r'][0][i][j] = -mg_rook_table[i*8 + j];
+                evalTable['n'][0][i][j] = -mg_knight_table[i*8 + j];
+                evalTable['b'][0][i][j] = -mg_bishop_table[i*8 + j];
+                evalTable['q'][0][i][j] = -mg_queen_table[i*8 + j];
+                evalTable['k'][0][i][j] = -mg_king_table[i*8 + j];
+
+
+                evalTable['P'][1][i][j] = eg_pawn_table[(7 - i)*8 + j];
+                evalTable['R'][1][i][j] = eg_rook_table[(7 - i)*8 + j];
+                evalTable['N'][1][i][j] = eg_knight_table[(7 - i)*8 + j];
+                evalTable['B'][1][i][j] = eg_bishop_table[(7 - i)*8 + j];
+                evalTable['Q'][1][i][j] = eg_queen_table[(7 - i)*8 + j];
+                evalTable['K'][1][i][j] = eg_king_table[(7 - i)*8 + j];
+
+
+                evalTable['p'][1][i][j] = -eg_pawn_table[i*8 + j];
+                evalTable['r'][1][i][j] = -eg_rook_table[i*8 + j];
+                evalTable['n'][1][i][j] = -eg_knight_table[i*8 + j];
+                evalTable['b'][1][i][j] = -eg_bishop_table[i*8 + j];
+                evalTable['q'][1][i][j] = -eg_queen_table[i*8 + j];
+                evalTable['k'][1][i][j] = -eg_king_table[i*8 + j];
+            }
+        }
+    }
+
+    void initGamePhaseTable() {
+        gamePhaseTable['P'] = 0;
+        gamePhaseTable['p'] = 0;
+
+        gamePhaseTable['R'] = 2;
+        gamePhaseTable['r'] = 2;
+
+        gamePhaseTable['N'] = 1;
+        gamePhaseTable['n'] = 1;
+
+        gamePhaseTable['B'] = 1;
+        gamePhaseTable['b'] = 1;
+
+        gamePhaseTable['Q'] = 4;
+        gamePhaseTable['q'] = 4;
+
+        gamePhaseTable['K'] = 0;
+        gamePhaseTable['k'] = 0;
+    }
 
     inline void updateKingMoved(int diff) {
         if (turn == WHITE) {
@@ -681,50 +866,109 @@ private:
         return ans && isPieceOfColor(turn, board[row][0]) && isRook(board[row][0]) && (board[row][1] == ' ') && (board[row][2] == ' ') && (board[row][3] == ' ');
     }
 
-    static inline int getEval(Color color, char piece, int row, int col) {
-        // the matrix are for white but inverse
-        if (color == WHITE) {
-            row = 7 - row;
-            // change column if eval board is not symmetric
-        }
+    inline int getMobilityScore(int i, int j) {
+        char c = board[i][j];
+        int moves = 0;
+        if (isKnight(c)) {
+            for(auto dir: knightDirs) {
+                int newI = i + dir[0];
+                int newJ = j + dir[1];
+                if (isValid(newI, newJ) && !isPieceOfColor(turn, board[newI][newJ])) {
+                    moves++;
+                }
+            }
+            return (int)(knightMobility * sqrt(moves));
+        } else if (isRook(c)) {
+            for(auto dir: rookDirsRays) {
+                int newI = i;
+                int newJ = j;
+                // consider all rook moves
+                while(true) {
+                    newI = newI + dir[0];
+                    newJ = newJ + dir[1];
+                    if (!isValid(newI, newJ)) {
+                        break;
+                    }
 
-        int pieceEval = 0;
-        if (piece == ' ') {
-        } else if (isPawn(piece)) {
-            pieceEval = pawnEvals[row][col];
-        } else if (isKnight(piece)) {
-            pieceEval = knightEvals[row][col];
-        } else if (isBishop(piece)) {
-            pieceEval = bishopEvals[row][col];
-        } else if (isRook(piece)) {
-            pieceEval = rookEvals[row][col];
-        } else if (isQueen(piece)) {
-            pieceEval = queenEvals[row][col];
-        } else if (isKing(piece)) {
-            pieceEval = kingEvals[row][col];
-        }
+                    // encountered same color piece
+                    if (isPieceOfColor(turn, board[newI][newJ])) {
+                        break;
+                    }
 
-        if (color == BLACK) {
-            pieceEval = -pieceEval;
+                    if (board[newI][newJ] == ' ') {
+                        moves++;
+                    }
+
+                    // captured a piece and can't go beyond
+                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                        moves++;
+                        break;
+                    }
+                }
+            }
+            return (int)(rookMobility * sqrt(moves));
+        } else if (isBishop(c)) {
+            for(auto dir: bishopDirsRays) {
+                int newI = i;
+                int newJ = j;
+                // consider all bishop moves
+                while(true) {
+                    newI = newI + dir[0];
+                    newJ = newJ + dir[1];
+                    if (!isValid(newI, newJ)) {
+                        break;
+                    }
+
+                    // encountered same color piece
+                    if (isPieceOfColor(turn, board[newI][newJ])) {
+                        break;
+                    }
+
+                    if (board[newI][newJ] == ' ') {
+                        moves++;
+                    }
+
+                    // captured a piece and can't go beyond
+                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                        moves++;
+                        break;
+                    }
+                }
+            }
+            return (int)(bishopMobility * sqrt(moves));
+        } else if (isQueen(c)) {
+            for(auto dir: queenDirsRays) {
+                int newI = i;
+                int newJ = j;
+                // consider all bishop moves
+                while(true) {
+                    newI = newI + dir[0];
+                    newJ = newJ + dir[1];
+                    if (!isValid(newI, newJ)) {
+                        break;
+                    }
+
+                    // encountered same color piece
+                    if (isPieceOfColor(turn, board[newI][newJ])) {
+                        break;
+                    }
+
+                    if (board[newI][newJ] == ' ') {
+                        moves++;
+                    }
+
+                    // captured a piece and can't go beyond
+                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                        moves++;
+                        break;
+                    }
+                }
+            }
+            return (int)(queenMobility * sqrt(moves));
+        } else {
+            return 0;
         }
-        return pieceEval;
     }
-
-    static inline unordered_map<char, int> pieceValue = {
-            {'p', -100},
-            {'r', -500},
-            {'n', -320},
-            {'b', -325},
-            {'q', -900},
-            {'k', -20000},
-            {'P', 100},
-            {'R', 500},
-            {'N', 320},
-            {'B', 325},
-            {'Q', 900},
-            {'K', 20000},
-            {' ', 0}
-    };
 
     static inline int capturePawnDirs[][2]  = {{1,1}, {1, -1}};
     static inline int knightDirs[][2] = {{2,1}, {2,-1}, {-2,1}, {-2,-1}, {1,2}, {1,-2}, {-1,2}, {-1,-2}};
@@ -738,6 +982,10 @@ private:
     static inline bool isBishop(char c) {return c == 'b' || c == 'B';}
     static inline bool isQueen(char c) {return c == 'q' || c == 'Q';}
     static inline bool isKing(char c) {return c == 'k' || c == 'K';}
+    static inline int rookMobility = 3;
+    static inline int knightMobility = 2;
+    static inline int bishopMobility = 4;
+    static inline int queenMobility = 3;
 
     static inline bool isValid(int r, int c) { return r >= 0 && c >= 0 && r < 8 && c < 8; }
 
@@ -779,107 +1027,4 @@ private:
     static inline bool isPieceOfOppositeColor(Color color, char c) {
         return c != ' ' && (color == WHITE ? ('a' <= c && c <= 'z') : ('A' <= c && c <= 'Z'));
     }
-
-    static inline int pawnEvals[8][8] =  {
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {50, 50, 50, 50, 50, 50, 50, 50},
-        {10, 10, 20, 30, 30, 20, 10, 10},
-        {5,  5, 10, 25, 25, 10,  5,  5},
-        {0,  0,  0, 20, 20,  0,  0,  0},
-        {5, -5,-10,  0,  0,-10, -5,  5},
-        {5, 10, 10,-20,-20, 10, 10,  5},
-        {0,  0,  0,  0,  0,  0,  0,  0}
-    };
-
-    static inline int knightEvals[8][8] = {
-        {-50,-40,-30,-30,-30,-30,-40,-50},
-        {-40,-20,  0,  0,  0,  0,-20,-40},
-        {-30,  0, 10, 15, 15, 10,  0,-30},
-        {-30,  5, 15, 20, 20, 15,  5,-30},
-        {-30,  0, 15, 20, 20, 15,  0,-30},
-        {-30,  5, 10, 15, 15, 10,  5,-30},
-        {-40,-20,  0,  5,  5,  0,-20,-40},
-        {-50,-40,-30,-30,-30,-30,-40,-50},
-    };
-
-    static inline int bishopEvals[8][8] = {
-        {-20,-10,-10,-10,-10,-10,-10,-20},
-        {-10,  0,  0,  0,  0,  0,  0,-10},
-        {-10,  0,  5, 10, 10,  5,  0,-10},
-        {-10,  5,  5, 10, 10,  5,  5,-10},
-        {-10,  0, 10, 10, 10, 10,  0,-10},
-        {-10, 10, 10, 10, 10, 10, 10,-10},
-        {-10,  5,  0,  0,  0,  0,  5,-10},
-        {-20,-10,-10,-10,-10,-10,-10,-20},
-    };
-
-    // default
-//    static inline int rookEvals[8][8] = {
-//        { 0,  0,  0,  0,  0,  0,  0,  0},
-//        { 5, 10, 10, 10, 10, 10, 10,  5},
-//        {-5,  0,  0,  0,  0,  0,  0, -5},
-//        {-5,  0,  0,  0,  0,  0,  0, -5},
-//        {-5,  0,  0,  0,  0,  0,  0, -5},
-//        {-5,  0,  0,  0,  0,  0,  0, -5},
-//        {-5,  0,  0,  0,  0,  0,  0, -5},
-//        { 0,  0,  0,  5,  5,  0,  0,  0}
-//    };
-
-    static inline int rookEvals[8][8] = {
-        { 0,  0,  0,  0,  0,  0,  0,  0},
-        { 5, 10, 10, 10, 10, 10, 10,  5},
-        {-5,  0,  0,  0,  0,  0,  0, -5},
-        {-5,  0,  0,  0,  0,  0,  0, -5},
-        {-5,  0,  0,  0,  0,  0,  0, -5},
-        {-5,  0,  0,  0,  0,  0,  0, -5},
-        {-5,  0,  0,  0,  0,  0,  0, -5},
-        {-5,  0,  0,  5,  5,  5,  0, -5}
-    };
-
-    // default
-//    static inline int queenEvals[8][8] = {
-//        {-20,-10,-10, -5, -5,-10,-10,-20},
-//        {-10,  0,  0,  0,  0,  0,  0,-10},
-//        {-10,  0,  5,  5,  5,  5,  0,-10},
-//        { -5,  0,  5,  5,  5,  5,  0, -5},
-//        {  0,  0,  5,  5,  5,  5,  0, -5},
-//        {-10,  5,  5,  5,  5,  5,  0,-10},
-//        {-10,  0,  5,  0,  0,  0,  0,-10},
-//        {-20,-10,-10, -5, -5,-10,-10,-20}
-//    };
-
-    // don't move queen from her starting square
-    static inline int queenEvals[8][8] = {
-        {-20,-10,-10, -5, -5,-10,-10,-20},
-        {-10,  0,  0,  0,  0,  0,  0,-10},
-        {-10,  0,  5,  5,  5,  5,  0,-10},
-        { -5,  0,  5,  5,  5,  5,  0, -5},
-        {  0,  0,  5,  5,  5,  5,  0, -5},
-        {-10,  5,  5,  5,  5,  5,  0,-10},
-        {-10,  0,  5,  0,  0,  0,  0,-10},
-        {-20,-10,-10, 40, -5,-10,-10,-20}
-    };
-
-    // no king activity
-//    static inline int kingEvals[8][8] = {
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  0,  0,  0,  0,  0,  0,  0},
-//            {0,  5,  5, -5, -5,  0,  5,  0}
-//    };
-
-    static inline int kingEvals[8][8] = {
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,  0,  0,  0,  0,  0},
-        {0,  0,  0,-10,-10,-10,  0,  0},
-        {0,  5, 10,-15,-15,-10, 10,  0}
-    };
 };
