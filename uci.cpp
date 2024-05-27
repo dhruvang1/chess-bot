@@ -13,31 +13,8 @@ class Uci {
     Board board;
     Search search;
     int moves = 0;
-    static const int OPENING_LINES = 9;
-    static inline string openings[OPENING_LINES][2] = {
-            // e4 opening
-            {"e2e4", "e7e5"},
-            {"e2e4", "c7c5"},
-            {"e2e4", "b2b3"},
-            // d4 opening
-            {"d2d4", "d7d5"},
-            {"d2d4", "g8f6"},
-            {"d2d4", "g7g6"},
-            // c4 opening
-            {"c2c4", "d7d5"},
-            {"c2c4", "e7e5"},
-            {"c2c4", "g7g6"},
-
-            // nf3 opening
-//            {"g1f3", "d7d5"},
-//            {"g1f3", "b7b6"},
-//            {"g1f3", "g8f6"},
-            // nc3 opening
-//            {"b1c3", "d7d5"},
-//            {"b1c3", "g8f6"},
-//            {"b1c3", "g7g6"},
-    };
-
+    static inline vector<string> openingsWhite{"e2e4", "d2d4", "c2c4"};
+    static inline unordered_map<string, vector<string>> openingsBlack;
 
     vector<string> tokenize(const string &msg) {
         stringstream ss(msg);
@@ -55,6 +32,17 @@ class Uci {
     }
 
     public:
+    Uci() {
+        srand(time(NULL));
+
+        openingsBlack["e2e4"] = vector<string>{"e7e5", "c7c5"};
+        openingsBlack["d2d4"] = vector<string>{"d7d5"};
+
+        // nf3 opening
+        openingsBlack["g1f3"] = vector<string>{"d7d5"};
+        // nc3 opening
+        openingsBlack["b1c3"] = vector<string>{"d7d5", "e7e5"};
+    }
 
     void handle(const string &msg) {
         vector<string> tokens = tokenize(msg);
@@ -108,7 +96,14 @@ class Uci {
 
             string bestMove;
             if (board.prevMoves.empty()) {
-                bestMove = openings[rand() % OPENING_LINES][0];
+                bestMove = openingsWhite[rand() % openingsWhite.size()];
+            } else if (board.prevMoves.size() == 1) {
+                string firstMove = board.prevMoves[0];
+                if (openingsBlack.find(firstMove) != openingsBlack.end()) {
+                    bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
+                } else {
+                    bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
+                }
             } else {
                 bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
             }
@@ -144,6 +139,7 @@ class Uci {
 
         if(isManual()) {
             cout << board.printBoard() << endl;
+            cout << board.getHash() << endl;
         }
     }
 };

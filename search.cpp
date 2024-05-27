@@ -14,6 +14,8 @@ class Search {
     static const int POSITIVE_NUM = 1 << 30;
     static const int NEGATIVE_NUM = - POSITIVE_NUM;
 
+    Board* board;
+
     int nodes = 0;
     int qNodes = 0;
     int pvsSuccessW = 0;
@@ -61,20 +63,20 @@ class Search {
         ofile.open("log.txt");
     }
 
-    string getBestMove(Board& board, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
+    string getBestMove(Board& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         nodes = 0;
         qNodes = 0;
-        Board boardCopy = board;
+        Board boardCopy = currentBoard;
+        this->board = &boardCopy;
 
         int myTimeLeft = (boardCopy.turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
-//        int myTimeInc = (boardCopy.turn == Board::WHITE) ? whiteIncMs : blackIncMs;
 
         // assume 30 moves for the game
         long softTimeLimitMs = myTimeLeft / 30;
-        if (board.prevMoves.size() < 16) {
+        if (board->prevMoves.size() < 16) {
             // keep lower time limit in 16 plies of opening
             softTimeLimitMs = myTimeLeft / 90;
-        } else if (board.prevMoves.size() < 32) {
+        } else if (board->prevMoves.size() < 32) {
             // next 16 plies of late opening / middle game
             softTimeLimitMs = myTimeLeft / 50;
         }
@@ -102,7 +104,7 @@ class Search {
                 break;
             }
 
-            auto result = minimax(boardCopy, NEGATIVE_NUM, POSITIVE_NUM, depth, depth);
+            auto result = minimax(NEGATIVE_NUM, POSITIVE_NUM, depth, depth);
 
             // hard time limit has passed, don't use the above result
             if (shouldQuit() && depth != START_DEPTH) {
@@ -129,36 +131,24 @@ class Search {
         return bestMove;
     }
 
-    Node minimax(Board& board, int alpha, int beta, int depth, int maxDepth) {
+    Node minimax(int alpha, int beta, int depth, int maxDepth) {
         nodes++;
-        if (board.isCheckmate()) {
-            return { board.turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
+        if (board->isCheckmate()) {
+            return { board->turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
         }
 
-        // trivial quick check for threefold repetition (not fully correct, but I think should be fine)
-        if (board.prevMoves.size() >= 8) {
-            int lastElem = board.prevMoves.size() - 1;
-            if (board.prevMoves[lastElem] == board.prevMoves[lastElem - 4] &&
-                board.prevMoves[lastElem - 2] == board.prevMoves[lastElem - 6] &&
-                board.prevMoves[lastElem - 1] == board.prevMoves[lastElem - 5] &&
-                board.prevMoves[lastElem - 3] == board.prevMoves[lastElem - 7]
-            ){
-                // give stalemate eval with same logic, maybe a slightly lower eval is better. Will do later.
-                return { board.turn == Board::WHITE ? (Board::stalemateEval + depth): -(Board::stalemateEval + depth), ""};
-            }
+        if (board->isThreeFold()) {
+            // give three fold repetition the eval 0, so we go for it in worse positions and avoid it in good positions.
+            return {0, ""};
         }
 
         if (depth == 0) {
-            return quiescenceSearch(board, alpha, beta, QSEARCH_MAX_DEPTH, maxDepth);
-//            return {board.eval, ""};
-//            return {board.getBoardEval(), ""};
+            return quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, maxDepth);
         }
 
         if (shouldQuit()) {
-//            return {board.eval, ""};
-
             // only evaluate if we are just starting
-            return {maxDepth == START_DEPTH ? board.getBoardEval(): 0, ""};
+            return {maxDepth == START_DEPTH ? board->getBoardEval(): 0, ""};
         }
 
         vector<string> legalMoves;
@@ -166,21 +156,21 @@ class Search {
         if (maxDepth != START_DEPTH && depth == maxDepth) {
             legalMoves = orderedMovesLastRound;
         } else {
-            legalMoves = board.getLegalMoves(false);
+            legalMoves = board->getLegalMoves(false);
         }
 
         if (legalMoves.empty()) {
             // it might look like we are checking twice for checkmate, once above and once now.
             // The above checks if there was an illegal move (not handling check) and the king is captured.
             // The below checks the line when we reach down a valid path and there are no legal moves.
-            if (board.isKingInCheck()) {
+            if (board->isKingInCheck()) {
                 // this is checkmate
-                return { board.turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
+                return { board->turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
             } else {
                 // this is stalemate.
                 // stalemate is still considered "bad" to not incentivize going for it in good or slightly bad positions.
-                // its given eval > 2x queen => if the position is worse than 2x queen, than stalemate is considered better so "try" to go for it.
-                return { board.turn == Board::WHITE ? -(Board::stalemateEval + depth): (Board::stalemateEval + depth), ""};
+                // its given eval of a minor piece => if the position is worse than a minor piece, than stalemate is considered better so "try" to go for it.
+                return { board->turn == Board::WHITE ? -(Board::stalemateEval + depth): (Board::stalemateEval + depth), ""};
             }
         }
 
@@ -195,27 +185,27 @@ class Search {
         }
 
         // max
-        if (board.turn == Board::WHITE) {
+        if (board->turn == Board::WHITE) {
             int maxEval = NEGATIVE_NUM;
             for(const auto& move: legalMoves) {
                 // logmsg(format("{}m {} md {} d {}", prefix, move, maxDepth, depth));
-                board.processMove(move);
+                board->processMove(move);
                 Node result{};
                 if (index == 0) {
-                    result = minimax(board, alpha, beta, depth - 1, maxDepth);
+                    result = minimax(alpha, beta, depth - 1, maxDepth);
                 } else {
-                    result = minimax(board, alpha, alpha + 1, depth-1, maxDepth);
+                    result = minimax(alpha, alpha + 1, depth-1, maxDepth);
                     if (result.eval > alpha && result.eval < beta) {
                         // pvs failed, do full search
                         // logmsg(format("{}m {} md {} d {} search failed", prefix, move, maxDepth, depth));
                         pvsFailureW++;
-                        result = minimax(board, alpha, beta, depth - 1, maxDepth);
+                        result = minimax(alpha, beta, depth - 1, maxDepth);
                     } else {
                         pvsSuccessW++;
                     }
                 }
                 // logmsg(format("{}m {} md {} d {} cp {}", prefix, move, maxDepth, depth, result.eval));
-                board.undoMove();
+                board->undoMove();
                 if (result.eval > maxEval) {
                     maxEval = result.eval;
                     bestMoves = move + " " + result.moves;
@@ -236,22 +226,22 @@ class Search {
             int minEval = POSITIVE_NUM;
             for(const auto& move: legalMoves) {
                 // logmsg(format("{}m {} md {} d {}", prefix, move, maxDepth, depth));
-                board.processMove(move);
+                board->processMove(move);
                 Node result{};
                 if (index == 0) {
-                    result = minimax(board, alpha, beta, depth - 1, maxDepth);
+                    result = minimax(alpha, beta, depth - 1, maxDepth);
                 } else {
-                    result = minimax(board, beta-1, beta, depth-1, maxDepth);
+                    result = minimax(beta-1, beta, depth-1, maxDepth);
                     if (result.eval > alpha && result.eval < beta) {
                         // pvs failed, do full search
                         pvsFailureB++;
-                        result = minimax(board, alpha, beta, depth - 1, maxDepth);
+                        result = minimax(alpha, beta, depth - 1, maxDepth);
                     } else {
                         pvsSuccessB++;
                     }
                 }
                 // logmsg(format("{}m {} md {} d {} cp {}", prefix, move, maxDepth, depth, result.eval));
-                board.undoMove();
+                board->undoMove();
                 if (result.eval < minEval) {
                     minEval = result.eval;
                     bestMoves = move + " " + result.moves;
@@ -273,7 +263,7 @@ class Search {
         if (depth == maxDepth) {
             // white aims to get a higher eval, hence it should sort by descending
             // its opposite for black
-            bool ascending = board.turn == Board::BLACK;
+            bool ascending = board->turn == Board::BLACK;
             sort(resultList.begin(), resultList.end(), [&ascending](auto left, auto right) {
                 return ascending ? left.first < right.first : right.first < left.first;
             });
@@ -289,35 +279,27 @@ class Search {
     }
 
 
-    Node quiescenceSearch(Board& board, int alpha, int beta, int depth, int minmaxDepth) {
+    Node quiescenceSearch(int alpha, int beta, int depth, int minmaxDepth) {
         qNodes++;
-        if (board.isCheckmate()) {
-            return { board.turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
+        if (board->isCheckmate()) {
+            return { board->turn == Board::WHITE ? -(Board::checkmateEval + depth): (Board::checkmateEval + depth), ""};
         }
 
         if (depth == 0) {
-            return {board.getBoardEval(), ""};
+            return {board->getBoardEval(), ""};
         }
 
-        // experiment with cutoff as done in Smol.cs
-//        if (board.getBoardEval() >= beta) {
-//            return {board.getBoardEval(), ""};
-//        }
-
-        int boardEval = board.getBoardEval();
-        if (board.turn == Board::WHITE)
+        int boardEval = board->getBoardEval();
+        if (board->turn == Board::WHITE)
             alpha = max(alpha, boardEval);
         else
             beta = min(beta, boardEval);
 
-//        if (shouldQuit()) {
-//            return {board.getBoardEval(), ""};
-//        }
 
-        vector<string> legalMoves = board.getLegalMoves(true);
+        vector<string> legalMoves = board->getLegalMoves(true);
         if (legalMoves.empty()) {
             // not perfect
-            return {board.getBoardEval(), ""};
+            return {board->getBoardEval(), ""};
         }
 
         string prefix;
@@ -327,13 +309,13 @@ class Search {
 
         // max
         string bestMoves;
-        if (board.turn == Board::WHITE) {
+        if (board->turn == Board::WHITE) {
             int maxEval = alpha;
             for(const auto& move: legalMoves) {
                 // logmsg(format("{}qSearch m {} md {} d {}", prefix, move, minmaxDepth, depth));
-                board.processMove(move);
-                auto result = quiescenceSearch(board, alpha, beta, depth - 1, minmaxDepth);
-                board.undoMove();
+                board->processMove(move);
+                auto result = quiescenceSearch(alpha, beta, depth - 1, minmaxDepth);
+                board->undoMove();
                 if (result.eval > maxEval) {
                     maxEval = result.eval;
                     bestMoves = move + " " + result.moves;
@@ -352,9 +334,9 @@ class Search {
             int minEval = beta;
             for(const auto& move: legalMoves) {
                 // logmsg(format("{}qSearch m {} md {} d {}", prefix, move, minmaxDepth, depth));
-                board.processMove(move);
-                auto result = quiescenceSearch(board, alpha, beta, depth - 1, minmaxDepth);
-                board.undoMove();
+                board->processMove(move);
+                auto result = quiescenceSearch(alpha, beta, depth - 1, minmaxDepth);
+                board->undoMove();
                 if (result.eval < minEval) {
                     minEval = result.eval;
                     bestMoves = move + " " + result.moves;

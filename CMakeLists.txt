@@ -8,4 +8,5 @@ add_executable(chess_engine main.cpp uci.cpp
         board.cpp
         search.cpp
         staticEvals.cpp
+        hash.cpp
 )

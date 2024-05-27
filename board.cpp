@@ -2,6 +2,7 @@
 #include <vector>
 #include <unordered_map>
 #include "staticEvals.cpp"
+#include "hash.cpp"
 
 using namespace std;
 
@@ -18,7 +19,7 @@ public:
     vector<char> prevPiece;
 
     static inline int checkmateEval = 15000;
-    static inline int stalemateEval = 2000; // see comments where its used
+    static inline int stalemateEval = 300; // see comments where its used
 
     public:
 
@@ -38,7 +39,6 @@ public:
 
         // add moves and eval for backtracking
         prevMoves.push_back(move);
-//        prevEvals.push_back(eval);
 
         // assume the values are valid
         int currCol = move[0] - 'a';
@@ -52,6 +52,10 @@ public:
             string turn_value = turn == WHITE ? "WHITE" : "BLACK";
             throw std::invalid_argument("Moving a piece of wrong color (or empty piece), move: " + move + " movedPiece: " + movedPiece + " turn: " + turn_value);
         }
+
+        // add turn hash
+        boardHash ^= hashHelper.getTurnHash();
+
 
         // handle promotion
         if (move.length() == 5) {
@@ -67,19 +71,21 @@ public:
                 newPiece -= 32;
             }
 
+            // remove hash of gone piece
+            boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
+
             // create new piece
             board[newRow][newCol] = newPiece;
-
-//            // update eval
-//            eval += pieceValue[newPiece] + getEval(turn, newPiece, newRow, newCol);
-//            eval -= (pieceValue[gonePiece] + getEval(turn, gonePiece, currRow, currCol));
+            boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
 
             // delete old pawn
+            boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
             board[currRow][currCol] = ' ';
 
             // flip turn
-            turn = turn == WHITE ? BLACK : WHITE;
+            flipTurn();
 
+            hashHistory[boardHash]++;
             return;
         }
 
@@ -90,26 +96,24 @@ public:
                 // short castle
                 updateShortRookMoved(1);
 
-//                eval += getEval(turn, board[currRow][7], currRow, 5) - getEval(turn, board[currRow][7], currRow, 7);
-
                 board[currRow][5] = board[currRow][7];
                 board[currRow][7] = ' ';
+                boardHash ^= hashHelper.getHash(board[currRow][5], currRow, 7);
+                boardHash ^= hashHelper.getHash(board[currRow][5], currRow, 5);
             } else {
                 // long castle
                 updateLongRookMoved(1);
 
-//                eval += getEval(turn, board[currRow][0], currRow, 3) - getEval(turn, board[currRow][0], currRow, 0);
-
                 board[currRow][3] = board[currRow][0];
                 board[currRow][0] =  ' ';
+                boardHash ^= hashHelper.getHash(board[currRow][3], currRow, 0);
+                boardHash ^= hashHelper.getHash(board[currRow][3], currRow, 3);
             }
         }
 
-        // update eval from gone piece
         char gonePiece = board[newRow][newCol];
         prevPiece.push_back(gonePiece); // add gone piece for backtracking
-//        eval -= pieceValue[gonePiece];
-//        eval -= getEval(turn, gonePiece, newRow, newCol);
+        boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
 
         // book keeping rook & king moves for castling
         if (isKing(movedPiece)) {
@@ -125,26 +129,21 @@ public:
         // handle en-passant
         // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
         if (isPawn(movedPiece) && abs(newCol - currCol) == 1 && gonePiece == ' ') {
-            // Remove the captured pawn eval, it won't be covered by above eval
-            char disappearedPawn = board[currRow][newCol];
-
-//            eval -= pieceValue[disappearedPawn];
-//            eval -= getEval(turn, disappearedPawn, currRow, newCol);
-
             // remove the captured pawn
+            boardHash ^= hashHelper.getHash(board[currRow][newCol], currRow, newCol);
             board[currRow][newCol] = ' ';
         }
-
-
-        // update eval because of moved piece
-//        eval += (getEval(turn, movedPiece, newRow, newCol) - getEval(turn, movedPiece, currRow, currCol));
 
 
         // update board
         board[newRow][newCol] = board[currRow][currCol];
         board[currRow][currCol] = ' ';
 
-        turn = turn == WHITE ? BLACK : WHITE;
+        boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
+        boardHash ^= hashHelper.getHash(board[newRow][newCol], currRow, currCol);
+
+        flipTurn();
+        hashHistory[boardHash]++;
     }
 
     void undoMove() {
@@ -153,13 +152,15 @@ public:
         }
         evalCalculated = false;
 
-//        eval = prevEvals[prevEvals.size() - 1];
-        turn = turn == WHITE ? BLACK : WHITE; // flip turn before to mimic the correct side making an undo move
+        flipTurn(); // flip turn before to mimic the correct side making an undo move
+
+        hashHistory[boardHash]--;
+        // add turn hash
+        boardHash ^= hashHelper.getTurnHash();
 
         char gonePiece = prevPiece[prevPiece.size() - 1];
         string lastMove = prevMoves[prevMoves.size() - 1];
 
-//        prevEvals.pop_back();
         prevPiece.pop_back();
         prevMoves.pop_back();
 
@@ -171,8 +172,15 @@ public:
 
         // handle promotion
         if (lastMove.length() == 5) {
+            // remove hash of newly promoted piece
+            boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
+
+
             board[prevRow][prevCol] = turn == WHITE ? 'P' : 'p';
             board[currRow][currCol] = gonePiece;
+
+            boardHash ^= hashHelper.getHash(board[prevRow][prevCol], prevRow, prevCol);
+            boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
 
             return;
         }
@@ -185,11 +193,15 @@ public:
                 updateShortRookMoved(-1);
                 board[prevRow][7] = board[prevRow][5];
                 board[prevRow][5] = ' ';
+                boardHash ^= hashHelper.getHash(board[prevRow][7], prevRow, 5);
+                boardHash ^= hashHelper.getHash(board[prevRow][7], prevRow, 7);
             } else {
                 // long castle
                 updateLongRookMoved(-1);
                 board[prevRow][0] = board[prevRow][3];
                 board[prevRow][3] =  ' ';
+                boardHash ^= hashHelper.getHash(board[prevRow][0], prevRow, 3);
+                boardHash ^= hashHelper.getHash(board[prevRow][0], prevRow, 0);
             }
         }
 
@@ -210,10 +222,14 @@ public:
         if (isPawn(movedPiece) && abs(prevCol - currCol) == 1 && gonePiece == ' ') {
             // restore previous pawn
             board[prevRow][currCol] = turn == WHITE ? 'p' : 'P';
+            boardHash ^= hashHelper.getHash(board[prevRow][currCol], prevRow, currCol);
         }
 
+        boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
         board[prevRow][prevCol] = board[currRow][currCol];
         board[currRow][currCol] = gonePiece;
+        boardHash ^= hashHelper.getHash(board[prevRow][prevCol], prevRow, prevCol);
+        boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
     }
 
     vector<string> getLegalMoves(bool capturesOnly) {
@@ -658,6 +674,10 @@ public:
         return eval;
     }
 
+    bool isThreeFold() {
+        return hashHistory[boardHash] >= 3;
+    }
+
     bool isCheckmate() {
         int boardEval = getBoardEval();
         return boardEval > checkmateEval || boardEval < -checkmateEval;
@@ -673,6 +693,10 @@ public:
             ans += "\n";
         }
         return ans;
+    }
+
+    uint64_t getHash() {
+        return boardHash;
     }
 
 
@@ -699,6 +723,11 @@ private:
     int evalTable[256][2][8][8]{}; // piece, middle game/ end game, row, col
     int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
     int pieceValue[256]{};
+
+    // board hash
+    uint64_t boardHash = 0;
+    unordered_map<uint64_t, int> hashHistory;
+    Hash hashHelper;
 
     void setup() {
         for(int i=0;i<8;i++) { // NOLINT(*-loop-convert)
@@ -729,6 +758,14 @@ private:
         board[7][5] = 'b';
         board[7][6] = 'n';
         board[7][7] = 'r';
+
+        boardHash = 0;
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                boardHash ^= hashHelper.getHash(board[i][j], i, j);
+            }
+        }
+        hashHistory[boardHash]++;
     }
 
     void initPieceValues() {
@@ -803,6 +840,10 @@ private:
 
         gamePhaseTable['K'] = 0;
         gamePhaseTable['k'] = 0;
+    }
+
+    inline void flipTurn() {
+        turn = turn == WHITE ? BLACK : WHITE;
     }
 
     inline void updateKingMoved(int diff) {

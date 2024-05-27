@@ -11,7 +11,4 @@ int main() {
         getline(cin, msg);
         uci.handle(msg);
     }
-
-   // Add castle as a legal move
-   // Check out the buggy mate
 }
