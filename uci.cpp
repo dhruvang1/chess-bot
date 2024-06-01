@@ -37,6 +37,7 @@ class Uci {
 
         openingsBlack["e2e4"] = vector<string>{"e7e5", "c7c5"};
         openingsBlack["d2d4"] = vector<string>{"d7d5"};
+        openingsBlack["c2c4"] = vector<string>{"e7e5"};
 
         // nf3 opening
         openingsBlack["g1f3"] = vector<string>{"d7d5"};
@@ -139,7 +140,6 @@ class Uci {
 
         if(isManual()) {
             cout << board.printBoard() << endl;
-            cout << board.getHash() << endl;
         }
     }
 };

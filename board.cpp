@@ -6,6 +6,13 @@
 
 using namespace std;
 
+struct Capture{
+    int myPieceValue = 0;
+    int otherPieceValue = 0;
+    string move;
+};
+
+
 class Board {
 public:
     enum Color {
@@ -28,6 +35,7 @@ public:
         initPieceValues();
         initEvalMap();
         initGamePhaseTable();
+        initPassPawn();
     }
 
     void processMove(const string& move) {
@@ -232,15 +240,44 @@ public:
         boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
     }
 
+    void processNullMove() {
+        string move = "null";
+
+        evalCalculated = false;
+
+        prevMoves.push_back(move);
+        prevPiece.push_back(' ');
+
+        // add turn hash
+        boardHash ^= hashHelper.getTurnHash();
+
+        // flip turn
+        flipTurn();
+    }
+
+    void undoNullMove() {
+        evalCalculated = false;
+        string lastMove = prevMoves[prevMoves.size() - 1];
+        if (lastMove != "null") {
+            throw std::invalid_argument( "last move is not null, move: " + lastMove);
+        }
+
+        prevMoves.pop_back();
+        prevPiece.pop_back();
+
+        // add turn hash
+        boardHash ^= hashHelper.getTurnHash();
+
+        // flip turn
+        flipTurn();
+    }
+
     vector<string> getLegalMoves(bool capturesOnly) {
         // simple now, captures before non captures.
         vector<string> remaining;
-        vector<pair<int, string>> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
+        vector<Capture> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
         vector<string> castle;
         vector<string> promotion;
-
-        bool attacked[8][8]{};
-        calculateAttacked(attacked);
 
         for(int i=0;i<8;i++) {
             for(int j=0;j<8;j++) {
@@ -254,11 +291,7 @@ public:
                                 if (board[newI][newJ] == ' ') {
                                     remaining.push_back(encode(i, j, newI, newJ));
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    if (attacked[newI][newJ]) {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
-                                    } else{
-                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
-                                    }
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                 }
                             }
                         }
@@ -286,11 +319,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    if (attacked[newI][newJ]) {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
-                                    } else {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
-                                    }
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                     break;
                                 }
                             }
@@ -318,11 +347,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    if (attacked[newI][newJ]) {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
-                                    } else {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
-                                    }
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                     break;
                                 }
                             }
@@ -350,11 +375,7 @@ public:
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    if (attacked[newI][newJ]) {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
-                                    } else {
-                                        capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
-                                    }
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                     break;
                                 }
                             }
@@ -364,18 +385,19 @@ public:
                         for(auto dir: kingDirs) {
                             int newI = i + dir[0];
                             int newJ = j + dir[1];
-                            if (isValid(newI, newJ) && !attacked[newI][newJ]) {
+                            if (isValid(newI, newJ) && !isSquareAttackedByColor(newI, newJ, flipColor(turn))) {
                                 if (board[newI][newJ] == ' ') {
                                     remaining.push_back(encode(i, j, newI, newJ));
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                 }
                             }
                         }
 
-                        if (canShortCastle(attacked)) {
+                        if (canShortCastle()) {
                             castle.push_back(encode(i , j, i , 6));
-                        } else if (canLongCastle(attacked)) {
+                        }
+                        if (canLongCastle()) {
                             castle.push_back(encode(i , j, i , 2));
                         }
                     }
@@ -418,10 +440,8 @@ public:
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'r'));
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'n'));
                                     promotion.push_back(encodePromotion(i, j ,newI, newJ, 'b'));
-                                } else if (attacked[newI][newJ]){
-                                    capture.emplace_back(pieceValue[board[newI][newJ]] + pieceValue[c], encode(i, j, newI, newJ));
                                 } else {
-                                    capture.emplace_back(pieceValue[board[newI][newJ]], encode(i, j, newI, newJ));
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
                                 }
                                 continue; // a normal capture or promotion => no en-passant
                             }
@@ -440,11 +460,7 @@ public:
 
                                 // A pawn moved 2 squares in the same column as current capture attempt
                                 if (isPawn(board[currRow][currCol]) && abs(currRow - prevRow) == 2 && currCol == newJ) {
-                                    if(attacked[newI][newJ]) {
-                                        capture.emplace_back(0, encode(i, j, newI, newJ));
-                                    } else {
-                                        capture.emplace_back(pieceValue[board[currRow][currCol]], encode(i, j, newI, newJ));
-                                    }
+                                    capture.push_back({pieceValue[c], pieceValue[board[currRow][currCol]], encode(i, j, newI, newJ)});
                                 }
                             }
                         }
@@ -462,20 +478,30 @@ public:
         }
 
         // white wants ascending sorting & black wants descending sorting
-        bool ascending = turn == WHITE;
+        bool isWhiteTurn = turn == WHITE;
 
         if (capture.size() > 1) {
-            std::sort(capture.begin(), capture.end(), [&ascending](auto &left, auto &right) {
-                if (ascending) {
-                    return left.first < right.first;
+            std::sort(capture.begin(), capture.end(), [&isWhiteTurn](auto &left, auto &right) {
+                if (isWhiteTurn) {
+                    if (left.myPieceValue == right.myPieceValue) {
+                        // black has -ve pieceValues => sort ascending
+                        return left.otherPieceValue < right.otherPieceValue;
+                    } else {
+                        return left.myPieceValue <  right.myPieceValue;
+                    }
                 } else {
-                    return left.first > right.first;
+                    if (left.myPieceValue == right.myPieceValue) {
+                        // white has +ve pieceValues => sort descending
+                        return left.otherPieceValue > right.otherPieceValue;
+                    } else {
+                        return left.myPieceValue >  right.myPieceValue;
+                    }
                 }
             });
         }
 
         for(auto& move: capture) {
-            promotion.push_back(move.second);
+            promotion.push_back(move.move);
         }
 
         if (!capturesOnly) {
@@ -488,114 +514,92 @@ public:
     }
 
     bool isKingInCheck() {
-        bool attackGrid[8][8]{};
-        calculateAttacked(attackGrid);
-
         for(int i=0;i<8;i++) {
             for(int j=0;j<8;j++) {
-                if(isPieceOfColor(turn, board[i][j]) && isKing(board[i][j])) {
-                    return attackGrid[i][j];
+                if(isKingOfColor(turn, board[i][j])) {
+                    return isSquareAttackedByColor(i, j, flipColor(turn));
                 }
             }
         }
         throw std::invalid_argument("There is no king on board");
     }
 
-    void calculateAttacked(bool grid[8][8]) {
-        for(int i=0;i<8;i++) {
-            for(int j=0;j<8;j++) {
-                char c = board[i][j];
-                if(isPieceOfOppositeColor(turn, c)) {
-                    if (isPawn(c)) {
-                        for(auto dir: capturePawnDirs) {
-                            // flip the direction compared to legal moves
-                            int newI = turn == WHITE ? i - dir[0] : i + dir[0];
-                            int newJ = j + dir[1];
+    bool isSquareAttackedByColor(int i, int j, Color color) {
+        int newI, newJ;
 
-                            if (isValid(newI, newJ)) {
-                                grid[newI][newJ] = true;
-                            }
-                        }
-                    } else if (isRook(c)) {
-                        for(auto dir: rookDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all rook moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
+        for(auto dir: capturePawnDirs) {
+            // flip the direction compared to legal moves
+            newI = color == WHITE ? i - dir[0] : i + dir[0];
+            newJ = j + dir[1];
 
-                                grid[newI][newJ] = true;
+            if (isValid(newI, newJ) && isPawnOfColor(color, board[newI][newJ])) {
+                return true;
+            }
+        }
 
-                                // encountered a piece
-                                if (board[newI][newJ] != ' ') {
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (isKnight(c)){
-                        for(auto dir: knightDirs) {
-                            int newI = i + dir[0];
-                            int newJ = j + dir[1];
-                            if (isValid(newI, newJ)) {
-                                grid[newI][newJ] = true;
-                            }
-                        }
-                    } else if (isBishop(c)) {
-                        for(auto dir: bishopDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all bishop moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
+        for(auto dir: knightDirs) {
+            newI = i + dir[0];
+            newJ = j + dir[1];
+            if (isValid(newI, newJ) && isKnightOfColor(color, board[newI][newJ])) {
+                return true;
+            }
+        }
 
-                                grid[newI][newJ] = true;
+        for(auto dir: bishopDirsRays) {
+            newI = i;
+            newJ = j;
+            // consider all bishop moves
+            while(true) {
+                newI = newI + dir[0];
+                newJ = newJ + dir[1];
+                if (!isValid(newI, newJ)) {
+                    break;
+                }
 
-                                // encountered a piece
-                                if (board[newI][newJ] != ' ') {
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (isQueen(c)) {
-                        for(auto dir: queenDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all queen moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
+                // bishop or queen
+                if (isBishopOfColor(color, board[newI][newJ]) || isQueenOfColor(color, board[newI][newJ])) {
+                    return true;
+                }
 
-                                grid[newI][newJ] = true;
-
-                                // encountered a piece
-                                if (board[newI][newJ] != ' ') {
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (isKing(c)) {
-                        for(auto dir: kingDirs) {
-                            int newI = i + dir[0];
-                            int newJ = j + dir[1];
-                            if (isValid(newI, newJ)) {
-                                grid[newI][newJ] = true;
-                            }
-                        }
-                    }
+                // encountered some other piece (doesn't matter ally or enemy)
+                if (board[newI][newJ] != ' ') {
+                    break;
                 }
             }
         }
+
+        for(auto dir: rookDirsRays) {
+            newI = i;
+            newJ = j;
+            // consider all rook moves
+            while(true) {
+                newI = newI + dir[0];
+                newJ = newJ + dir[1];
+                if (!isValid(newI, newJ)) {
+                    break;
+                }
+
+                // bishop or queen
+                if (isRookOfColor(color, board[newI][newJ]) || isQueenOfColor(color, board[newI][newJ])) {
+                    return true;
+                }
+
+                // encountered some other piece (doesn't matter ally or enemy)
+                if (board[newI][newJ] != ' ') {
+                    break;
+                }
+            }
+        }
+
+        for(auto dir: kingDirs) {
+            newI = i + dir[0];
+            newJ = j + dir[1];
+            if (isValid(newI, newJ) && isKingOfColor(color, board[newI][newJ])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     int getBoardEval() {
@@ -604,12 +608,14 @@ public:
         }
 
         eval = 0;
+        gamePhase = 0;
         int mgEval = 0;
         int egEval = 0;
         int mobility = 0;
-        int gamePhase = 0;
         int whitePawns[8]{};
         int blackPawns[8]{};
+
+        uint64_t positions[256]{};
 
         for(int i=0;i<8;i++) {
             for(int j=0;j<8;j++) {
@@ -625,6 +631,7 @@ public:
                     isPieceOfColor(WHITE, c) ? whitePawns[j]++ : blackPawns[j]++;
                 }
 
+                positions[c] |= 1 << ((i << 3) + j);
                 // mobility
 //                mobility += isPieceOfColor(WHITE, c) ? getMobilityScore(i, j): -getMobilityScore(i, j);
             }
@@ -637,50 +644,94 @@ public:
         eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
 
         // Doubled & isolated pawns don't matter much in opening
-        int doubledPawnsPenalty = (gamePhase * 5 + (24 - gamePhase) * 2) / 24;
-        int isolatedPawnsPenalty = (gamePhase * 4 + (24 - gamePhase) * 2) / 24;
+        double doubledPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.5) / 24;
+        double isolatedPawnsPenalty = (gamePhase * 0.2 + (24 - gamePhase) * 0.5) / 24;
+        double passedPawnsBonus = (gamePhase * 0.2 + (24 - gamePhase) * 0.8) / 24;
 
         // process pawns
-        for(int i=0;i<8;i++) {
-            if (whitePawns[i] >= 1) {
+        for(int j=0; j < 8; j++) {
+            if (whitePawns[j] >= 1) {
                 // doubled pawns
-                eval -= (pieceValue['P'] * (whitePawns[i] - 1))/doubledPawnsPenalty;
+                eval -= int(pieceValue['P'] * (whitePawns[j] - 1) * doubledPawnsPenalty);
 
                 // isolated pawns
                 bool isolated = true;
-                if ((i > 0 && whitePawns[i-1] > 0) || (i < 7 && whitePawns[i+1] > 0)){
+                if ((j > 0 && whitePawns[j - 1] > 0) || (j < 7 && whitePawns[j + 1] > 0)){
                     isolated = false;
                 }
                 if (isolated)
-                    eval -= (pieceValue['P'] * whitePawns[i])/isolatedPawnsPenalty;
+                    eval -= int(pieceValue['P'] * whitePawns[j] * isolatedPawnsPenalty);
+
+                if (gamePhase <= 18) {
+                    // passed pawns are valuable only if they are a bit advanced
+                    for (int i = 6; i > 3; i--) {
+                        // check if whitePawn is present
+                        if (positions['P'] & (1 << (i * 8 + j))) {
+                            // check if there is no black pawn in passing zone
+                            if ((whitePassPawn[i][j] & positions['p']) == 0) {
+                                eval += int(pieceValue['P'] * passedPawnsBonus);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
 
-            if (blackPawns[i] >= 1) {
+            if (blackPawns[j] >= 1) {
                 // doubled pawns
-                eval -= (pieceValue['p'] * (blackPawns[i] - 1))/doubledPawnsPenalty;
+                eval -= int(pieceValue['p'] * (blackPawns[j] - 1) * doubledPawnsPenalty);
 
                 // isolated pawns
                 bool isolated = true;
-                if ((i > 0 && blackPawns[i-1] > 0) || (i < 7 && blackPawns[i+1] > 0)){
+                if ((j > 0 && blackPawns[j - 1] > 0) || (j < 7 && blackPawns[j + 1] > 0)){
                     isolated = false;
                 }
                 if (isolated)
-                    eval -= (pieceValue['p'] * blackPawns[i])/isolatedPawnsPenalty;
+                    eval -= int(pieceValue['p'] * blackPawns[j] * isolatedPawnsPenalty);
+
+                if (gamePhase <= 18) {
+                    // passed pawns are valuable only if they are a bit advanced
+                    for (int i = 1; i < 4; i++) {
+                        // check if blackPawn is present
+                        if (positions['p'] & (1 << (i * 8 + j))) {
+                            // check if there is no white pawn in passing zone
+                            if ((blackPassPawn[i][j] & positions['P']) == 0) {
+                                eval += int(pieceValue['p'] * passedPawnsBonus);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
 
         evalCalculated = true;
+        if (turn == BLACK)
+            eval = -eval;
 
         return eval;
+    }
+
+    int getGamePhase() {
+        if (evalCalculated) {
+            return gamePhase;
+        }
+        getBoardEval();
+        return gamePhase;
     }
 
     bool isThreeFold() {
         return hashHistory[boardHash] >= 3;
     }
 
-    bool isCheckmate() {
-        int boardEval = getBoardEval();
-        return boardEval > checkmateEval || boardEval < -checkmateEval;
+    bool isKingPresent() {
+        int count = 0;
+        for(auto & i : board) {
+            for(char j : i) {
+                count += isKing(j);
+            }
+        }
+        return count == 2;
     }
 
     string printBoard() {
@@ -721,8 +772,11 @@ private:
     bool evalCalculated = false;
     int eval = 0;
     int evalTable[256][2][8][8]{}; // piece, middle game/ end game, row, col
+    int gamePhase = 0;
     int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
     int pieceValue[256]{};
+    uint64_t whitePassPawn[8][8]{};
+    uint64_t blackPassPawn[8][8]{};
 
     // board hash
     uint64_t boardHash = 0;
@@ -769,19 +823,19 @@ private:
     }
 
     void initPieceValues() {
-        pieceValue['p'] = -100;
-        pieceValue['r'] = -500;
-        pieceValue['n'] = -320;
-        pieceValue['b'] = -325;
-        pieceValue['q'] = -900;
-        pieceValue['k'] = -20000;
-
-        pieceValue['P'] = 100;
-        pieceValue['R'] = 500;
-        pieceValue['N'] = 320;
-        pieceValue['B'] = 325;
-        pieceValue['Q'] = 900;
+        pieceValue['P'] = 88;
+        pieceValue['R'] = 495;
+        pieceValue['N'] = 309;
+        pieceValue['B'] = 331;
+        pieceValue['Q'] = 980;
         pieceValue['K'] = 20000;
+
+        pieceValue['p'] = -pieceValue['P'];
+        pieceValue['r'] = -pieceValue['R'];
+        pieceValue['n'] = -pieceValue['N'];
+        pieceValue['b'] = -pieceValue['B'];
+        pieceValue['q'] = -pieceValue['Q'];
+        pieceValue['k'] = -pieceValue['K'];
 
         pieceValue[' '] = 0;
     }
@@ -818,6 +872,41 @@ private:
                 evalTable['b'][1][i][j] = -eg_bishop_table[i*8 + j];
                 evalTable['q'][1][i][j] = -eg_queen_table[i*8 + j];
                 evalTable['k'][1][i][j] = -eg_king_table[i*8 + j];
+            }
+        }
+    }
+
+    void initPassPawn() {
+        // passed pawns
+        uint64_t whitePawnAheadCol[8][8]{};
+        uint64_t blackPawnAheadCol[8][8]{};
+
+        for(int i=6;i>=1;i--) {
+            for(int j=0;j<8;j++) {
+                whitePawnAheadCol[i][j] |= 1 << (8 * (i + 1) + j);
+                whitePawnAheadCol[i][j] |= whitePawnAheadCol[i + 1][j];
+            }
+        }
+
+        for(int i=1;i<7;i++) {
+            for(int j=0;j<8;j++) {
+                blackPawnAheadCol[i][j] |= 1 << (8 * (i - 1) + j);
+                blackPawnAheadCol[i][j] |= blackPawnAheadCol[i - 1][j];
+            }
+        }
+
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                whitePassPawn[i][j] = whitePawnAheadCol[i][j];
+                blackPassPawn[i][j] = blackPawnAheadCol[i][j];
+                if (j > 0) {
+                    whitePassPawn[i][j] |= whitePawnAheadCol[i][j - 1];
+                    blackPassPawn[i][j] |= blackPawnAheadCol[i][j - 1];
+                }
+                if (j < 7) {
+                    whitePassPawn[i][j] |= whitePawnAheadCol[i][j + 1];
+                    blackPassPawn[i][j] |= blackPawnAheadCol[i][j + 1];
+                }
             }
         }
     }
@@ -882,29 +971,38 @@ private:
         }
     }
 
-    inline bool canShortCastle(bool attacked[8][8]) {
-        bool ans;
-        int row = 0;
-        if (turn == WHITE) {
-            ans = whiteShortRookMoved == 0 && whiteKingMoved == 0 && !attacked[row][4] && !attacked[row][5] && !attacked[row][6];
-        } else {
-            row = 7;
-            ans = blackShortRookMoved == 0 && blackKingMoved == 0 && !attacked[row][4] && !attacked[row][5] && !attacked[row][6];
+    inline bool canShortCastle() {
+        int row = turn == WHITE ? 0: 7;
+        if (board[row][5] != ' ' || board[row][6] != ' ') {
+            return false;
         }
-        return ans && isPieceOfColor(turn, board[row][7]) && isRook(board[row][7]) && (board[row][5] == ' ') && (board[row][6] == ' ');
+
+        if (isRookOfColor(turn, board[row][7]) &&
+            ((turn == WHITE && whiteShortRookMoved == 0 && whiteKingMoved == 0) ||
+             (turn == BLACK && blackShortRookMoved == 0 && blackKingMoved == 0))) {
+            return !isSquareAttackedByColor(row, 4, flipColor(turn)) &&
+                  !isSquareAttackedByColor(row, 5, flipColor(turn)) &&
+                  !isSquareAttackedByColor(row, 6, flipColor(turn));
+        } else {
+            return false;
+        }
     }
 
-    inline bool canLongCastle(bool attacked[8][8]) {
-        bool ans;
-        int row = 0;
-        if (turn == WHITE) {
-            ans = whiteLongRookMoved == 0 && whiteKingMoved == 0 && !attacked[row][2] && !attacked[row][3] && !attacked[row][4];
-        } else {
-            row = 7;
-            ans = blackLongRookMoved == 0 && blackKingMoved == 0 && !attacked[row][2] && !attacked[row][3] && !attacked[row][4];
+    inline bool canLongCastle() {
+        int row = turn == WHITE ? 0: 7;
+        if(board[row][1] != ' ' || board[row][2] != ' ' || board[row][3] != ' ') {
+            return false;
         }
 
-        return ans && isPieceOfColor(turn, board[row][0]) && isRook(board[row][0]) && (board[row][1] == ' ') && (board[row][2] == ' ') && (board[row][3] == ' ');
+        if (isRookOfColor(turn, board[row][0]) &&
+            ((turn == WHITE && whiteShortRookMoved == 0 && whiteKingMoved == 0) ||
+             (turn == BLACK && blackShortRookMoved == 0 && blackKingMoved == 0))) {
+            return !isSquareAttackedByColor(row, 2, flipColor(turn)) &&
+                   !isSquareAttackedByColor(row, 3, flipColor(turn)) &&
+                   !isSquareAttackedByColor(row, 4, flipColor(turn));
+        } else {
+            return false;
+        }
     }
 
     inline int getMobilityScore(int i, int j) {
@@ -1057,12 +1155,40 @@ private:
         return c != ' ' && (color == BLACK ? ('a' <= c && c <= 'z') : ('A' <= c && c <= 'Z'));
     }
 
+    static inline bool isPawnOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'P') : (c == 'p');
+    }
+
+    static inline bool isRookOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'R') : (c == 'r');
+    }
+
+    static inline bool isKnightOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'N') : (c == 'n');
+    }
+
+    static inline bool isBishopOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'B') : (c == 'b');
+    }
+
+    static inline bool isQueenOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'Q') : (c == 'q');
+    }
+
+    static inline bool isKingOfColor(Color color, char c) {
+        return color == WHITE ? (c == 'K') : (c == 'k');
+    }
+
     static inline bool isRookAtShortHome(Color color, int row, int col) {
         return col == 7 && (color == WHITE ? row == 0 : row == 7);
     }
 
     static inline bool isRookAtLongHome(Color color, int row, int col) {
         return col == 7 && (color == WHITE ? row == 0 : row == 7);
+    }
+
+    static inline Color flipColor(Color color) {
+        return color == WHITE ? BLACK : WHITE;
     }
 
     static inline bool isPieceOfOppositeColor(Color color, char c) {
