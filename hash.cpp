@@ -7,9 +7,15 @@ using namespace std;
 // we don't care about castling or en-passant to keep life simple :)
 class Hash {
     uint64_t hashArray[256][8][8]{};
+    uint64_t epCol[8]{};
     uint64_t turnHash; // hash used when black makes a move
 
     public:
+    uint64_t whiteShortCastle;
+    uint64_t blackShortCastle;
+    uint64_t whiteLongCastle;
+    uint64_t blackLongCastle;
+
     Hash() {
         mt19937 rng;
         rng.seed(4132983); // random seed
@@ -38,8 +44,18 @@ class Hash {
         }
 
         turnHash = distribution(rng);
+
+        for(int i=0;i<8;i++) {
+            epCol[i] = distribution(rng);
+        }
+
+        whiteShortCastle = distribution(rng);
+        whiteLongCastle = distribution(rng);
+        blackShortCastle = distribution(rng);
+        blackLongCastle = distribution(rng);
     }
 
     inline uint64_t getHash(char piece, int i, int j) { return hashArray[piece][i][j]; }
     inline uint64_t getTurnHash() { return turnHash; }
+    inline uint64_t getEnPassantHash(int j) { return epCol[j]; }
 };

@@ -1,8 +1,10 @@
 #include <string>
 #include <vector>
+#include <cstdio>
 #include <unordered_map>
 #include "staticEvals.cpp"
 #include "hash.cpp"
+#include "transposition.cpp"
 
 using namespace std;
 
@@ -24,9 +26,10 @@ public:
 
     vector<string> prevMoves;
     vector<char> prevPiece;
+    int enPassantCol = -1;
 
     static inline int checkmateEval = 15000;
-    static inline int stalemateEval = 300; // see comments where its used
+    static inline int stalemateEval = 0; // see comments where its used
 
     public:
 
@@ -38,15 +41,20 @@ public:
         initPassPawn();
     }
 
+    void logMembers() {
+        cout << "prevMoves " << prevMoves.size() << " " << prevMoves.capacity() << endl;
+        cout << "prevPiece " << prevPiece.size() << " " << prevPiece.capacity() << endl;
+        cout << "hashHistory " << hashHistory.size() << " " << hashHistory.bucket_count() << endl;
+
+        for (const auto & [ key, value ] : hashHistory) {
+            cout << key << ": " << value << endl;
+        }
+    }
+
     void processMove(const string& move) {
         if (move.length() != 4 && move.length() != 5) {
             throw std::invalid_argument( "received move with length not 4/5, move: " + move);
         }
-
-        evalCalculated = false;
-
-        // add moves and eval for backtracking
-        prevMoves.push_back(move);
 
         // assume the values are valid
         int currCol = move[0] - 'a';
@@ -61,9 +69,23 @@ public:
             throw std::invalid_argument("Moving a piece of wrong color (or empty piece), move: " + move + " movedPiece: " + movedPiece + " turn: " + turn_value);
         }
 
+        evalCalculated = false;
+        // add moves and eval for backtracking
+        prevMoves.push_back(move);
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
-
+        // reset en-passant hash
+        maybeResetEnPassantHash();
+        // castling hash
+        bool canShortCastleInitially;
+        bool canLongCastleInitially;
+        if (turn == WHITE) {
+            canShortCastleInitially = (whiteShortRookMoved == 0 && whiteKingMoved == 0);
+            canLongCastleInitially = (whiteLongRookMoved == 0 && whiteKingMoved == 0);
+        } else {
+            canShortCastleInitially = (blackShortRookMoved == 0 && blackKingMoved == 0);
+            canLongCastleInitially = (blackLongRookMoved == 0 && blackKingMoved == 0);
+        }
 
         // handle promotion
         if (move.length() == 5) {
@@ -134,9 +156,14 @@ public:
             }
         }
 
-        // handle en-passant
-        // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
-        if (isPawn(movedPiece) && abs(newCol - currCol) == 1 && gonePiece == ' ') {
+        // handle double pawn moves
+        if (isPawn(movedPiece) && abs(newRow - currRow) == 2 && currCol == newCol) {
+            boardHash ^= hashHelper.getEnPassantHash(currCol);
+            enPassantCol = currCol;
+        } else if (isPawn(movedPiece) && abs(newCol - currCol) == 1 && gonePiece == ' ') {
+            // handle en-passant
+            // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
+
             // remove the captured pawn
             boardHash ^= hashHelper.getHash(board[currRow][newCol], currRow, newCol);
             board[currRow][newCol] = ' ';
@@ -149,6 +176,35 @@ public:
 
         boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
         boardHash ^= hashHelper.getHash(board[newRow][newCol], currRow, currCol);
+
+        // check if you can castle now
+        bool canShortCastleNow;
+        bool canLongCastleNow;
+        if (turn == WHITE) {
+            canShortCastleNow = (whiteShortRookMoved == 0 && whiteKingMoved == 0);
+            canLongCastleNow = (whiteLongRookMoved == 0 && whiteKingMoved == 0);
+
+            // changed status
+            if (canShortCastleInitially + canShortCastleNow == 1) {
+                boardHash ^= hashHelper.whiteShortCastle;
+            }
+
+            if (canLongCastleInitially + canLongCastleNow == 1) {
+                boardHash ^= hashHelper.whiteLongCastle;
+            }
+        } else {
+            canShortCastleNow = (blackShortRookMoved == 0 && blackKingMoved == 0);
+            canLongCastleNow = (blackLongRookMoved == 0 && blackKingMoved == 0);
+
+            // changed status
+            if (canShortCastleInitially + canShortCastleNow == 1) {
+                boardHash ^= hashHelper.blackShortCastle;
+            }
+
+            if (canLongCastleInitially + canLongCastleNow == 1) {
+                boardHash ^= hashHelper.blackLongCastle;
+            }
+        }
 
         flipTurn();
         hashHistory[boardHash]++;
@@ -163,8 +219,26 @@ public:
         flipTurn(); // flip turn before to mimic the correct side making an undo move
 
         hashHistory[boardHash]--;
+        if (hashHistory[boardHash] == 0) {
+            hashHistory.erase(boardHash);
+        }
+
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
+        // reset en-passant hash
+        maybeResetEnPassantHash();
+
+        // castling hash
+        bool canShortCastleInitially;
+        bool canLongCastleInitially;
+        if (turn == WHITE) {
+            canShortCastleInitially = (whiteShortRookMoved == 0 && whiteKingMoved == 0);
+            canLongCastleInitially = (whiteLongRookMoved == 0 && whiteKingMoved == 0);
+        } else {
+            canShortCastleInitially = (blackShortRookMoved == 0 && blackKingMoved == 0);
+            canLongCastleInitially = (blackLongRookMoved == 0 && blackKingMoved == 0);
+        }
+
 
         char gonePiece = prevPiece[prevPiece.size() - 1];
         string lastMove = prevMoves[prevMoves.size() - 1];
@@ -238,6 +312,51 @@ public:
         board[currRow][currCol] = gonePiece;
         boardHash ^= hashHelper.getHash(board[prevRow][prevCol], prevRow, prevCol);
         boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
+
+        // add hash double pawn moves
+        if (!prevMoves.empty()) {
+            string secondLastMove = prevMoves[prevMoves.size() - 1];
+
+            int secPrevCol = secondLastMove[0] - 'a';
+            int secPrevRow = secondLastMove[1] - '0' - 1;
+            int secCurrCol = secondLastMove[2] - 'a';
+            int secCurrRow = secondLastMove[3] - '0' - 1;
+
+            char secMovedPiece = board[secCurrRow][secCurrCol];
+            if (isPawn(secMovedPiece) && abs(secCurrRow - secPrevRow) == 2 && secCurrCol == secPrevCol) {
+                boardHash ^= hashHelper.getEnPassantHash(secCurrCol);
+                enPassantCol = secCurrCol;
+            }
+        }
+
+        // check if you can castle now
+        bool canShortCastleNow;
+        bool canLongCastleNow;
+        if (turn == WHITE) {
+            canShortCastleNow = (whiteShortRookMoved == 0 && whiteKingMoved == 0);
+            canLongCastleNow = (whiteLongRookMoved == 0 && whiteKingMoved == 0);
+
+            // changed status
+            if (canShortCastleInitially + canShortCastleNow == 1) {
+                boardHash ^= hashHelper.whiteShortCastle;
+            }
+
+            if (canLongCastleInitially + canLongCastleNow == 1) {
+                boardHash ^= hashHelper.whiteLongCastle;
+            }
+        } else {
+            canShortCastleNow = (blackShortRookMoved == 0 && blackKingMoved == 0);
+            canLongCastleNow = (blackLongRookMoved == 0 && blackKingMoved == 0);
+
+            // changed status
+            if (canShortCastleInitially + canShortCastleNow == 1) {
+                boardHash ^= hashHelper.blackShortCastle;
+            }
+
+            if (canLongCastleInitially + canLongCastleNow == 1) {
+                boardHash ^= hashHelper.blackLongCastle;
+            }
+        }
     }
 
     void processNullMove() {
@@ -250,6 +369,8 @@ public:
 
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
+        // reset en-passant hash
+        maybeResetEnPassantHash();
 
         // flip turn
         flipTurn();
@@ -268,16 +389,35 @@ public:
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
 
+        // add hash double pawn moves
+        if (!prevMoves.empty()) {
+            string secondLastMove = prevMoves[prevMoves.size() - 1];
+
+            int secPrevCol = secondLastMove[0] - 'a';
+            int secPrevRow = secondLastMove[1] - '0' - 1;
+            int secCurrCol = secondLastMove[2] - 'a';
+            int secCurrRow = secondLastMove[3] - '0' - 1;
+
+            char secMovedPiece = board[secCurrRow][secCurrCol];
+            if (isPawn(secMovedPiece) && abs(secCurrRow - secPrevRow) == 2 && secCurrCol == secPrevCol) {
+                boardHash ^= hashHelper.getEnPassantHash(secCurrCol);
+                enPassantCol = secCurrCol;
+            }
+        }
+
         // flip turn
         flipTurn();
     }
 
-    vector<string> getLegalMoves(bool capturesOnly) {
+    void getLegalMoves(bool capturesOnly, vector<string>& promotion) {
         // simple now, captures before non captures.
         vector<string> remaining;
         vector<Capture> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
         vector<string> castle;
-        vector<string> promotion;
+
+        remaining.reserve(40);
+        capture.reserve(40);
+        castle.reserve(2);
 
         for(int i=0;i<8;i++) {
             for(int j=0;j<8;j++) {
@@ -356,7 +496,7 @@ public:
                         for(auto dir: queenDirsRays) {
                             int newI = i;
                             int newJ = j;
-                            // consider all bishop moves
+                            // consider all queen moves
                             while(true) {
                                 newI = newI + dir[0];
                                 newJ = newJ + dir[1];
@@ -470,47 +610,75 @@ public:
             }
         }
 
-        // merge vectors
-        if (!capturesOnly) {
-            for(auto& move: castle) {
-                promotion.push_back(move);
-            }
-        }
+        // merge vectors and order them
 
-        // white wants ascending sorting & black wants descending sorting
-        bool isWhiteTurn = turn == WHITE;
-
+        // sort the captures
         if (capture.size() > 1) {
-            std::sort(capture.begin(), capture.end(), [&isWhiteTurn](auto &left, auto &right) {
+            // white wants ascending sorting & black wants descending sorting
+            bool isWhiteTurn = turn == WHITE;
+
+            sort(capture.begin(), capture.end(), [&isWhiteTurn](auto &left, auto &right) {
                 if (isWhiteTurn) {
-                    if (left.myPieceValue == right.myPieceValue) {
-                        // black has -ve pieceValues => sort ascending
-                        return left.otherPieceValue < right.otherPieceValue;
+                    if (left.otherPieceValue == right.otherPieceValue) {
+                        // LVA (least valuable aggressor)
+                        // white has +ve pieceValues => sort ascending (i.e. rook (5) before queen (9))
+                        return left.myPieceValue < right.myPieceValue;
                     } else {
-                        return left.myPieceValue <  right.myPieceValue;
+                        // MVV (most valuable victim)
+                        // black have -ve pieceValues => sort ascending (i.e. queen (-9) before rook (-5))
+                        return left.otherPieceValue <  right.otherPieceValue;
                     }
                 } else {
-                    if (left.myPieceValue == right.myPieceValue) {
-                        // white has +ve pieceValues => sort descending
-                        return left.otherPieceValue > right.otherPieceValue;
+                    if (left.otherPieceValue == right.otherPieceValue) {
+                        // LVA (least valuable aggressor)
+                        // black has -ve pieceValues => sort descending (i.e. rook (-5) before queen (-9))
+                        return left.myPieceValue > right.myPieceValue;
                     } else {
-                        return left.myPieceValue >  right.myPieceValue;
+                        // MVV (most valuable victim)
+                        // white has +ve pieceValues => sort descending (i.e. queen before rook)
+                        return left.otherPieceValue >  right.otherPieceValue;
                     }
                 }
             });
         }
 
-        for(auto& move: capture) {
-            promotion.push_back(move.move);
-        }
 
-        if (!capturesOnly) {
+        if (capturesOnly) {
+            // check detection is too slow
+//            vector<string> check;
+//            vector<string> nonCheck;
+//
+//            // find moves that put king in check
+//            for(auto& rmove: remaining) {
+//                processMove(rmove);
+//                if (isKingInCheck()) {
+//                    check.push_back(rmove);
+//                } else {
+//                    nonCheck.push_back(rmove);
+//                }
+//                undoMove();
+//            }
+//
+//            for(auto& chkmove: check) {
+//                promotion.push_back(chkmove);
+//            }
+
+            for(auto& capmove: capture) {
+                promotion.push_back(capmove.move);
+            }
+        } else {
+            for(auto& move: castle) {
+                promotion.push_back(move);
+            }
+
+            for(auto& move: capture) {
+                promotion.push_back(move.move);
+            }
+
             for(auto& move: remaining) {
                 promotion.push_back(move);
             }
         }
-
-        return promotion;
     }
 
     bool isKingInCheck() {
@@ -631,7 +799,7 @@ public:
                     isPieceOfColor(WHITE, c) ? whitePawns[j]++ : blackPawns[j]++;
                 }
 
-                positions[c] |= 1 << ((i << 3) + j);
+                positions[c] |= 1ULL << ((i << 3) + j);
                 // mobility
 //                mobility += isPieceOfColor(WHITE, c) ? getMobilityScore(i, j): -getMobilityScore(i, j);
             }
@@ -644,23 +812,26 @@ public:
         eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
 
         // Doubled & isolated pawns don't matter much in opening
-        double doubledPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.5) / 24;
-        double isolatedPawnsPenalty = (gamePhase * 0.2 + (24 - gamePhase) * 0.5) / 24;
+        double doubledPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.4) / 24;
+        double doubledIsolatedPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.2) / 24; // doubled pawns if they are also isolated
+        double isolatedPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.4) / 24;
         double passedPawnsBonus = (gamePhase * 0.2 + (24 - gamePhase) * 0.8) / 24;
 
         // process pawns
         for(int j=0; j < 8; j++) {
             if (whitePawns[j] >= 1) {
-                // doubled pawns
-                eval -= int(pieceValue['P'] * (whitePawns[j] - 1) * doubledPawnsPenalty);
-
                 // isolated pawns
                 bool isolated = true;
                 if ((j > 0 && whitePawns[j - 1] > 0) || (j < 7 && whitePawns[j + 1] > 0)){
                     isolated = false;
                 }
-                if (isolated)
+                if (isolated) {
                     eval -= int(pieceValue['P'] * whitePawns[j] * isolatedPawnsPenalty);
+                    eval -= int(pieceValue['P'] * (whitePawns[j] - 1) * doubledIsolatedPawnsPenalty);
+                } else {
+                    // doubled pawns
+                    eval -= int(pieceValue['P'] * (whitePawns[j] - 1) * doubledPawnsPenalty);
+                }
 
                 if (gamePhase <= 18) {
                     // passed pawns are valuable only if they are a bit advanced
@@ -678,16 +849,18 @@ public:
             }
 
             if (blackPawns[j] >= 1) {
-                // doubled pawns
-                eval -= int(pieceValue['p'] * (blackPawns[j] - 1) * doubledPawnsPenalty);
-
                 // isolated pawns
                 bool isolated = true;
                 if ((j > 0 && blackPawns[j - 1] > 0) || (j < 7 && blackPawns[j + 1] > 0)){
                     isolated = false;
                 }
-                if (isolated)
+                if (isolated) {
                     eval -= int(pieceValue['p'] * blackPawns[j] * isolatedPawnsPenalty);
+                    eval -= int(pieceValue['p'] * (blackPawns[j] - 1) * doubledIsolatedPawnsPenalty);
+                } else {
+                    // doubled pawns
+                    eval -= int(pieceValue['p'] * (blackPawns[j] - 1) * doubledPawnsPenalty);
+                }
 
                 if (gamePhase <= 18) {
                     // passed pawns are valuable only if they are a bit advanced
@@ -705,6 +878,37 @@ public:
             }
         }
 
+
+        // king safety in early & middle-game
+        if (gamePhase >= 16) {
+            // white king
+            int kingPos = __builtin_ctzll(positions['K']);
+            int kRow = kingPos >> 3, kCol = kingPos & 7;
+            uint64_t pawnPosition = positions['P'];
+            // b & g file
+            if (kRow == 0 && kCol == 6) {
+                eval += (isBitSet(pawnPosition, 8 + 5) + isBitSet(pawnPosition, 8 + 6) + isBitSet(pawnPosition, 8 + 7)) * 0.2 * pieceValue['P'];
+                eval += (isBitSet(pawnPosition, 16 + 5) + isBitSet(pawnPosition, 16 + 6) + isBitSet(pawnPosition, 16 + 7)) * 0.1 * pieceValue['P'];
+            } else if (kRow == 0 && kCol == 1) {
+                eval += (isBitSet(pawnPosition, 8 + 0) + isBitSet(pawnPosition, 8 + 1) + isBitSet(pawnPosition, 8 + 2)) * 0.2 * pieceValue['P'];
+                eval += (isBitSet(pawnPosition, 16 + 0) + isBitSet(pawnPosition, 16 + 1) + isBitSet(pawnPosition, 16 + 2)) * 0.1 * pieceValue['P'];
+            }
+
+            // black king
+            kingPos = __builtin_ctzll(positions['k']);
+            kRow = kingPos >> 3, kCol = kingPos & 7;
+            pawnPosition = positions['p'];
+            // b & g file
+            if (kRow == 7 && kCol == 6) {
+                eval += (isBitSet(pawnPosition, 48 + 5) + isBitSet(pawnPosition, 48 + 6) + isBitSet(pawnPosition, 48 + 7)) * 0.2 * pieceValue['p'];
+                eval += (isBitSet(pawnPosition, 40 + 5) + isBitSet(pawnPosition, 40 + 6) + isBitSet(pawnPosition, 40 + 7)) * 0.1 * pieceValue['p'];
+            } else if (kRow == 7 && kCol == 1) {
+                eval += (isBitSet(pawnPosition, 48 + 0) + isBitSet(pawnPosition, 48 + 1) + isBitSet(pawnPosition, 48 + 2)) * 0.2 * pieceValue['p'];
+                eval += (isBitSet(pawnPosition, 40 + 0) + isBitSet(pawnPosition, 40 + 1) + isBitSet(pawnPosition, 40 + 2)) * 0.1 * pieceValue['p'];
+            }
+        }
+
+
         evalCalculated = true;
         if (turn == BLACK)
             eval = -eval;
@@ -721,7 +925,13 @@ public:
     }
 
     bool isThreeFold() {
-        return hashHistory[boardHash] >= 3;
+        auto it = hashHistory.find(boardHash);
+        return it != hashHistory.end() && it->second >= 3;
+    }
+
+    bool isPositionRepeated() {
+        auto it = hashHistory.find(boardHash);
+        return it != hashHistory.end() && it->second >= 2;
     }
 
     bool isKingPresent() {
@@ -746,7 +956,7 @@ public:
         return ans;
     }
 
-    uint64_t getHash() {
+    uint64_t getHash() const {
         return boardHash;
     }
 
@@ -819,6 +1029,12 @@ private:
                 boardHash ^= hashHelper.getHash(board[i][j], i, j);
             }
         }
+
+        boardHash ^= hashHelper.whiteShortCastle;
+        boardHash ^= hashHelper.whiteLongCastle;
+        boardHash ^= hashHelper.blackShortCastle;
+        boardHash ^= hashHelper.blackLongCastle;
+
         hashHistory[boardHash]++;
     }
 
@@ -1005,6 +1221,13 @@ private:
         }
     }
 
+    inline void maybeResetEnPassantHash() {
+        if (enPassantCol != -1) {
+            boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
+            enPassantCol = -1;
+        }
+    }
+
     inline int getMobilityScore(int i, int j) {
         char c = board[i][j];
         int moves = 0;
@@ -1125,6 +1348,10 @@ private:
     static inline int knightMobility = 2;
     static inline int bishopMobility = 4;
     static inline int queenMobility = 3;
+
+    static inline int isBitSet(uint64_t val, int position) {
+        return (val >> position) & 1;
+    }
 
     static inline bool isValid(int r, int c) { return r >= 0 && c >= 0 && r < 8 && c < 8; }
 

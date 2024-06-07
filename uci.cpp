@@ -48,6 +48,9 @@ class Uci {
     void handle(const string &msg) {
         vector<string> tokens = tokenize(msg);
 
+//        if (board.prevMoves.size() > 6) {
+//            exit(0);
+//        }
         if (msg == "quit") {
             exit(1);
         }
@@ -59,18 +62,27 @@ class Uci {
             cout << "readyok" << endl;
         } else if (msg == "ucinewgame") {
             board = Board();
+            search = Search();
             moves = 0;
         } else if(tokens[0] == "position") {
             // debug condition to process new moves
             if(tokens[1] != "startpos") {
                for(int i=1;i<tokens.size(); i++) {
-                   board.processMove(tokens[i]);
+                   if (tokens[i] == "null") {
+                       board.processNullMove();
+                   } else{
+                       board.processMove(tokens[i]);
+                   }
                    moves++;
                }
             } else if (tokens.size() > 3) {
                 // compare positions and process the new move
                 for(int i = moves + 3; i < tokens.size() ; i++) {
-                    board.processMove(tokens[i]);
+                    if (tokens[i] == "null") {
+                        board.processNullMove();
+                    } else{
+                        board.processMove(tokens[i]);
+                    }
                     moves++;
                 }
             }
@@ -78,6 +90,8 @@ class Uci {
         } else if (tokens[0] == "go") {
             int whiteTime = 60 * 1000;
             int blackTime = 60 * 1000;
+//            int whiteTime = 300 * 1000;
+//            int blackTime = 300 * 1000;
 
             int whiteInc = 0;
             int blackInc = 0;
@@ -114,7 +128,11 @@ class Uci {
 
             cout << "bestmove " << bestMove << endl;
         } else if (tokens[0] == "undo") {
-            board.undoMove();
+            if (board.prevMoves[board.prevMoves.size() - 1] == "null") {
+                board.undoNullMove();
+            } else {
+                board.undoMove();
+            }
             moves--;
         } else if (tokens[0] == "eval") {
             if (tokens.size() > 1) {
@@ -131,7 +149,8 @@ class Uci {
             if (tokens.size() > 1 && tokens[1] == "capture") {
                 capturesOnly = true;
             }
-            vector<string> legalMoveList = board.getLegalMoves(capturesOnly);
+            vector<string> legalMoveList;
+            board.getLegalMoves(capturesOnly, legalMoveList);
             for(auto& m : legalMoveList) {
                 cout << m << ", ";
             }
@@ -140,6 +159,7 @@ class Uci {
 
         if(isManual()) {
             cout << board.printBoard() << endl;
+            cout << board.getHash() << endl;
         }
     }
 };
