@@ -25,9 +25,13 @@ class Search {
     int pvsFailure = 0;
     int wrongEntry = 0;
     int cacheHit= 0;
+    int qcacheHit= 0;
     int cacheFutileHit= 0;
+    int qcacheFutileHit= 0;
     int cacheSave= 0;
+    int qcacheSave= 0;
     int cacheSaveSuccess= 0;
+    int qcacheSaveSuccess= 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int NULL_MOVE_REDUCTION = 2;
@@ -68,6 +72,8 @@ class Search {
 
     Search() {
 //        ofile.open("log.txt");
+        ttable.reserve(TTSize);
+        qttable.reserve(TTSize);
         for(int i=0;i<TTSize;i++) {
             ttable.emplace_back();
             qttable.emplace_back();
@@ -91,6 +97,10 @@ class Search {
         cacheFutileHit = 0;
         cacheSave = 0;
         cacheSaveSuccess = 0;
+        qcacheHit = 0;
+        qcacheFutileHit = 0;
+        qcacheSave = 0;
+        qcacheSaveSuccess = 0;
         orderedMovesLastRound.clear();
 
         int myTimeLeft = (board->turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
@@ -160,6 +170,8 @@ class Search {
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " " << (cacheSaveSuccess*100)/cacheSave << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
+        cout << "info qcache " << "save " << qcacheSave << " " << qcacheSaveSuccess << " " << (qcacheSaveSuccess*100)/qcacheSave << " hit " << qcacheHit << " " << qcacheHit - qcacheFutileHit
+             << " " << (100*(qcacheHit - qcacheFutileHit))/qcacheHit << endl;
         cout << "info wrongentry " << wrongEntry << endl;
 
         return bestMove;
@@ -177,7 +189,7 @@ class Search {
         // We don't use TTable when we are doing full search as it causes issues.
         const TTEntry& ttEntry = ttable[board -> getHash() % TTSize];
         string ttMove;
-        if (ttEntry.hash == board -> getHash() && alpha == beta - 1) {
+        if (ttEntry.hash == board -> getHash()) {
             if (alpha == beta -1 ) {
                 cacheHit++;
                 if (ttEntry.depth >= depth) {
@@ -196,6 +208,7 @@ class Search {
         } else if (!board -> isKingPresent()){
             return {-(Board::checkmateEval + depth), ""};
         } else if (depth > 3){
+            // internal iterative deepening
             depth -= 1;
         }
 
@@ -331,11 +344,11 @@ class Search {
     Node quiescenceSearch(int alpha, int beta, int depth, int minmaxDepth) {
         qNodes++;
 
-        //   Check transposition table for cached result
+        // Check transposition table for cached result
         const TTEntry& ttEntry = qttable[board -> getHash() % TTSize];
         string ttMove;
         if (ttEntry.hash == board -> getHash() && alpha == beta - 1) {
-            cacheHit++;
+            qcacheHit++;
             if (ttEntry.depth >= depth) {
                 if (ttEntry.flag == TTFlagExact) {
                     return {ttEntry.eval, ttEntry.move};
@@ -347,7 +360,7 @@ class Search {
             }
 
             ttMove = ttEntry.move;
-            cacheFutileHit++;
+            qcacheFutileHit++;
         }
 
 
@@ -433,7 +446,7 @@ class Search {
     }
 
     void saveInQTT(const string& move, int eval, int depth, int flag) {
-        cacheSave++;
+        qcacheSave++;
         int key = board->getHash() % TTSize;
 
         auto entry = &qttable[key];
@@ -442,7 +455,7 @@ class Search {
             return;
         }
 
-        cacheSaveSuccess++;
+        qcacheSaveSuccess++;
 
         qttable[key].update(board->getHash(), move, eval, depth, flag);
     }
