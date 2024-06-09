@@ -39,6 +39,7 @@ public:
         initEvalMap();
         initGamePhaseTable();
         initPassPawn();
+        initValidMoves();
     }
 
     void logMembers() {
@@ -444,125 +445,7 @@ public:
             for(int j=0;j<8;j++) {
                 if (isPieceOfColor(turn, board[i][j])) {
                     char c = board[i][j];
-                    if (isKnight(c)) {
-                        for(auto dir: knightDirs) {
-                            int newI = i + dir[0];
-                            int newJ = j + dir[1];
-                            if (isValid(newI, newJ)) {
-                                if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
-                                } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
-                                }
-                            }
-                        }
-                    }
-                    else if (isRook(c)) {
-                        for(auto dir: rookDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all rook moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
-
-                                // encountered same color piece
-                                if (isPieceOfColor(turn, board[newI][newJ])) {
-                                    break;
-                                }
-
-                                if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
-                                }
-
-                                // captured a piece and can't go beyond
-                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (isBishop(c)) {
-                        for(auto dir: bishopDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all bishop moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
-
-                                // encountered same color piece
-                                if (isPieceOfColor(turn, board[newI][newJ])) {
-                                    break;
-                                }
-
-                                if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
-                                }
-
-                                // captured a piece and can't go beyond
-                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
-                                    break;
-                                }
-                            }
-                        }
-                    } else if (isQueen(c)) {
-                        for(auto dir: queenDirsRays) {
-                            int newI = i;
-                            int newJ = j;
-                            // consider all queen moves
-                            while(true) {
-                                newI = newI + dir[0];
-                                newJ = newJ + dir[1];
-                                if (!isValid(newI, newJ)) {
-                                    break;
-                                }
-
-                                // encountered same color piece
-                                if (isPieceOfColor(turn, board[newI][newJ])) {
-                                    break;
-                                }
-
-                                if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
-                                }
-
-                                // captured a piece and can't go beyond
-                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    else if (isKing(c)) {
-                        for(auto dir: kingDirs) {
-                            int newI = i + dir[0];
-                            int newJ = j + dir[1];
-                            if (isValid(newI, newJ) && !isSquareAttackedByColor(newI, newJ, flipColor(turn))) {
-                                if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
-                                } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
-                                }
-                            }
-                        }
-
-                        if (canShortCastle()) {
-                            castle.push_back(encode(i , j, i , 6));
-                        }
-                        if (canLongCastle()) {
-                            castle.push_back(encode(i , j, i , 2));
-                        }
-                    }
-                    else if (isPawn(c)) {
+                    if (isPawn(c)) {
                         // push two squares if both empty
                         if (turn == WHITE && i == 1) {
                             if (isValid(i+2, j) && board[i+1][j] == ' ' && board[i+2][j] == ' ') {
@@ -573,7 +456,6 @@ public:
                                 remaining.push_back(encode(i, j, i - 2, j));
                             }
                         }
-
 
                         int newI = turn == WHITE ? i + 1 : i - 1;
                         int newJ = j;
@@ -625,7 +507,47 @@ public:
                                 }
                             }
                         }
+                    } else if (isKing(c)) {
+                        for(auto& dir: validMoves[c][i][j]) {
+                            int newI = dir[0] >> 3;
+                            int newJ = dir[0] & 7;
 
+                            if (!isSquareAttackedByColor(newI, newJ, flipColor(turn))) {
+                                if (board[newI][newJ] == ' ') {
+                                    remaining.push_back(encode(i, j, newI, newJ));
+                                } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
+                                }
+                            }
+
+                            if (canShortCastle()) {
+                                castle.push_back(encode(i , j, i , 6));
+                            }
+                            if (canLongCastle()) {
+                                castle.push_back(encode(i , j, i , 2));
+                            }
+                        }
+                    } else {
+                        for(auto& dir: validMoves[c][i][j]) {
+                            for(auto& move: dir) {
+                                int newI = move >> 3;
+                                int newJ = move & 7;
+                                // encountered same color piece
+                                if (isPieceOfColor(turn, board[newI][newJ])) {
+                                    break;
+                                }
+
+                                if (board[newI][newJ] == ' ') {
+                                    remaining.push_back(encode(i, j, newI, newJ));
+                                }
+
+                                // captured a piece and can't go beyond
+                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -823,6 +745,7 @@ public:
                 positions[c] |= 1ULL << ((i << 3) + j);
                 // mobility
 //                mobility += isPieceOfColor(WHITE, c) ? getMobilityScore(i, j): -getMobilityScore(i, j);
+//                eval += mobility;
             }
         }
 
@@ -956,11 +879,6 @@ public:
         return gamePhase;
     }
 
-    bool isThreeFold() {
-        auto it = hashHistory.find(boardHash);
-        return it != hashHistory.end() && it->second >= 3;
-    }
-
     bool isPositionRepeated() {
         auto it = hashHistory.find(boardHash);
         return it != hashHistory.end() && it->second >= 2;
@@ -1017,6 +935,7 @@ private:
     int gamePhase = 0;
     int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
     int pieceValue[256]{};
+    vector<vector<int>> validMoves[256][8][8]{};
     uint64_t whitePassPawn[8][8]{};
     uint64_t blackPassPawn[8][8]{};
     uint64_t darkSquares = 0xAA55AA55AA55AA55;
@@ -1161,6 +1080,94 @@ private:
         }
     }
 
+    void initValidMoves() {
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                for(auto dir: kingDirs) {
+                    int newI = i + dir[0];
+                    int newJ = j + dir[1];
+                    vector<int> temp;
+                    if (isValid(newI, newJ)) {
+                        temp.push_back(getCoord(newI,newJ));
+                        validMoves['K'][i][j].push_back(temp);
+                        validMoves['k'][i][j].push_back(temp);
+                    }
+                }
+
+                for(auto dir: knightDirs) {
+                    int newI = i + dir[0];
+                    int newJ = j + dir[1];
+                    vector<int> temp;
+                    if (isValid(newI, newJ)) {
+                        temp.push_back(getCoord(newI,newJ));
+                        validMoves['N'][i][j].push_back(temp);
+                        validMoves['n'][i][j].push_back(temp);
+                    }
+                }
+
+                for(auto dir: bishopDirsRays) {
+                    int newI = i;
+                    int newJ = j;
+
+                    vector<int> temp;
+                    while(true) {
+                        newI = newI + dir[0];
+                        newJ = newJ + dir[1];
+                        if (!isValid(newI, newJ)) {
+                            break;
+                        }
+                        temp.push_back(getCoord(newI, newJ));
+                    }
+
+                    if (!temp.empty()) {
+                        validMoves['B'][i][j].push_back(temp);
+                        validMoves['b'][i][j].push_back(temp);
+                    }
+                }
+
+                for(auto dir: rookDirsRays) {
+                    int newI = i;
+                    int newJ = j;
+
+                    vector<int> temp;
+                    while(true) {
+                        newI = newI + dir[0];
+                        newJ = newJ + dir[1];
+                        if (!isValid(newI, newJ)) {
+                            break;
+                        }
+                        temp.push_back(getCoord(newI, newJ));
+                    }
+
+                    if (!temp.empty()) {
+                        validMoves['R'][i][j].push_back(temp);
+                        validMoves['r'][i][j].push_back(temp);
+                    }
+                }
+
+                for(auto dir: queenDirsRays) {
+                    int newI = i;
+                    int newJ = j;
+
+                    vector<int> temp;
+                    while(true) {
+                        newI = newI + dir[0];
+                        newJ = newJ + dir[1];
+                        if (!isValid(newI, newJ)) {
+                            break;
+                        }
+                        temp.push_back(getCoord(newI, newJ));
+                    }
+
+                    if (!temp.empty()) {
+                        validMoves['Q'][i][j].push_back(temp);
+                        validMoves['q'][i][j].push_back(temp);
+                    }
+                }
+            }
+        }
+    }
+
     void initGamePhaseTable() {
         gamePhaseTable['P'] = 0;
         gamePhaseTable['p'] = 0;
@@ -1274,35 +1281,6 @@ private:
                 }
             }
             return (int)(knightMobility * sqrt(moves));
-        } else if (isRook(c)) {
-            for(auto dir: rookDirsRays) {
-                int newI = i;
-                int newJ = j;
-                // consider all rook moves
-                while(true) {
-                    newI = newI + dir[0];
-                    newJ = newJ + dir[1];
-                    if (!isValid(newI, newJ)) {
-                        break;
-                    }
-
-                    // encountered same color piece
-                    if (isPieceOfColor(turn, board[newI][newJ])) {
-                        break;
-                    }
-
-                    if (board[newI][newJ] == ' ') {
-                        moves++;
-                    }
-
-                    // captured a piece and can't go beyond
-                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                        moves++;
-                        break;
-                    }
-                }
-            }
-            return (int)(rookMobility * sqrt(moves));
         } else if (isBishop(c)) {
             for(auto dir: bishopDirsRays) {
                 int newI = i;
@@ -1332,38 +1310,67 @@ private:
                 }
             }
             return (int)(bishopMobility * sqrt(moves));
-        } else if (isQueen(c)) {
-            for(auto dir: queenDirsRays) {
-                int newI = i;
-                int newJ = j;
-                // consider all bishop moves
-                while(true) {
-                    newI = newI + dir[0];
-                    newJ = newJ + dir[1];
-                    if (!isValid(newI, newJ)) {
-                        break;
-                    }
-
-                    // encountered same color piece
-                    if (isPieceOfColor(turn, board[newI][newJ])) {
-                        break;
-                    }
-
-                    if (board[newI][newJ] == ' ') {
-                        moves++;
-                    }
-
-                    // captured a piece and can't go beyond
-                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                        moves++;
-                        break;
-                    }
-                }
-            }
-            return (int)(queenMobility * sqrt(moves));
-        } else {
-            return 0;
         }
+        return 0;
+//        else if (isRook(c)) {
+//            for(auto dir: rookDirsRays) {
+//                int newI = i;
+//                int newJ = j;
+//                // consider all rook moves
+//                while(true) {
+//                    newI = newI + dir[0];
+//                    newJ = newJ + dir[1];
+//                    if (!isValid(newI, newJ)) {
+//                        break;
+//                    }
+//
+//                    // encountered same color piece
+//                    if (isPieceOfColor(turn, board[newI][newJ])) {
+//                        break;
+//                    }
+//
+//                    if (board[newI][newJ] == ' ') {
+//                        moves++;
+//                    }
+//
+//                    // captured a piece and can't go beyond
+//                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+//                        moves++;
+//                        break;
+//                    }
+//                }
+//            }
+//            return (int)(rookMobility * sqrt(moves));
+//        } else if (isQueen(c)) {
+//            for(auto dir: queenDirsRays) {
+//                int newI = i;
+//                int newJ = j;
+//                // consider all bishop moves
+//                while(true) {
+//                    newI = newI + dir[0];
+//                    newJ = newJ + dir[1];
+//                    if (!isValid(newI, newJ)) {
+//                        break;
+//                    }
+//
+//                    // encountered same color piece
+//                    if (isPieceOfColor(turn, board[newI][newJ])) {
+//                        break;
+//                    }
+//
+//                    if (board[newI][newJ] == ' ') {
+//                        moves++;
+//                    }
+//
+//                    // captured a piece and can't go beyond
+//                    if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+//                        moves++;
+//                        break;
+//                    }
+//                }
+//            }
+//            return (int)(queenMobility * sqrt(moves));
+
     }
 
     static inline int capturePawnDirs[][2]  = {{1,1}, {1, -1}};
@@ -1385,6 +1392,11 @@ private:
 
     static inline int isBitSet(uint64_t val, int position) {
         return (val >> position) & 1;
+    }
+
+
+    static inline int getCoord(int i, int j) {
+        return (i << 3) + j;
     }
 
     static inline bool isValid(int r, int c) { return r >= 0 && c >= 0 && r < 8 && c < 8; }
