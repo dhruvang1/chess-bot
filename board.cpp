@@ -219,8 +219,13 @@ public:
         flipTurn(); // flip turn before to mimic the correct side making an undo move
 
         hashHistory[boardHash]--;
-        if (hashHistory[boardHash] == 0) {
+        int hashCount = hashHistory[boardHash];
+        if (hashCount == 0) {
             hashHistory.erase(boardHash);
+        }
+        else if (hashCount <= 0) {
+            cout << "info hash not found: " << boardHash << endl;
+            throw std::invalid_argument("cannot undo from empty list");
         }
 
         // add turn hash
@@ -263,6 +268,22 @@ public:
 
             boardHash ^= hashHelper.getHash(board[prevRow][prevCol], prevRow, prevCol);
             boardHash ^= hashHelper.getHash(board[currRow][currCol], currRow, currCol);
+
+            // add hash double pawn moves
+            if (!prevMoves.empty()) {
+                string secondLastMove = prevMoves[prevMoves.size() - 1];
+
+                int secPrevCol = secondLastMove[0] - 'a';
+                int secPrevRow = secondLastMove[1] - '0' - 1;
+                int secCurrCol = secondLastMove[2] - 'a';
+                int secCurrRow = secondLastMove[3] - '0' - 1;
+
+                char secMovedPiece = board[secCurrRow][secCurrCol];
+                if (isPawn(secMovedPiece) && abs(secCurrRow - secPrevRow) == 2 && secCurrCol == secPrevCol) {
+                    boardHash ^= hashHelper.getEnPassantHash(secCurrCol);
+                    enPassantCol = secCurrCol;
+                }
+            }
 
             return;
         }
@@ -811,6 +832,17 @@ public:
 
         eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
 
+        double bishopPairBonus = (gamePhase * 0.05 + (24 - gamePhase) * 0.3) / 24;
+
+        // bishop pair
+        if ((positions['B'] & lightSquares) > 0 && (positions['B'] & darkSquares) > 0) {
+            eval += bishopPairBonus * pieceValue['P'];
+        }
+
+        if ((positions['b'] & lightSquares) > 0 && (positions['b'] & darkSquares) > 0) {
+            eval += bishopPairBonus * pieceValue['p'];
+        }
+
         // Doubled & isolated pawns don't matter much in opening
         double doubledPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.4) / 24;
         double doubledIsolatedPawnsPenalty = (gamePhase * 0 + (24 - gamePhase) * 0.2) / 24; // doubled pawns if they are also isolated
@@ -887,10 +919,10 @@ public:
             uint64_t pawnPosition = positions['P'];
             // b & g file
             if (kRow == 0 && kCol == 6) {
-                eval += (isBitSet(pawnPosition, 8 + 5) + isBitSet(pawnPosition, 8 + 6) + isBitSet(pawnPosition, 8 + 7)) * 0.2 * pieceValue['P'];
+                eval += (isBitSet(pawnPosition, 8 + 5) + isBitSet(pawnPosition, 8 + 6) + isBitSet(pawnPosition, 8 + 7)) * 0.15 * pieceValue['P'];
                 eval += (isBitSet(pawnPosition, 16 + 5) + isBitSet(pawnPosition, 16 + 6) + isBitSet(pawnPosition, 16 + 7)) * 0.1 * pieceValue['P'];
             } else if (kRow == 0 && kCol == 1) {
-                eval += (isBitSet(pawnPosition, 8 + 0) + isBitSet(pawnPosition, 8 + 1) + isBitSet(pawnPosition, 8 + 2)) * 0.2 * pieceValue['P'];
+                eval += (isBitSet(pawnPosition, 8 + 0) + isBitSet(pawnPosition, 8 + 1) + isBitSet(pawnPosition, 8 + 2)) * 0.15 * pieceValue['P'];
                 eval += (isBitSet(pawnPosition, 16 + 0) + isBitSet(pawnPosition, 16 + 1) + isBitSet(pawnPosition, 16 + 2)) * 0.1 * pieceValue['P'];
             }
 
@@ -900,10 +932,10 @@ public:
             pawnPosition = positions['p'];
             // b & g file
             if (kRow == 7 && kCol == 6) {
-                eval += (isBitSet(pawnPosition, 48 + 5) + isBitSet(pawnPosition, 48 + 6) + isBitSet(pawnPosition, 48 + 7)) * 0.2 * pieceValue['p'];
+                eval += (isBitSet(pawnPosition, 48 + 5) + isBitSet(pawnPosition, 48 + 6) + isBitSet(pawnPosition, 48 + 7)) * 0.15 * pieceValue['p'];
                 eval += (isBitSet(pawnPosition, 40 + 5) + isBitSet(pawnPosition, 40 + 6) + isBitSet(pawnPosition, 40 + 7)) * 0.1 * pieceValue['p'];
             } else if (kRow == 7 && kCol == 1) {
-                eval += (isBitSet(pawnPosition, 48 + 0) + isBitSet(pawnPosition, 48 + 1) + isBitSet(pawnPosition, 48 + 2)) * 0.2 * pieceValue['p'];
+                eval += (isBitSet(pawnPosition, 48 + 0) + isBitSet(pawnPosition, 48 + 1) + isBitSet(pawnPosition, 48 + 2)) * 0.15 * pieceValue['p'];
                 eval += (isBitSet(pawnPosition, 40 + 0) + isBitSet(pawnPosition, 40 + 1) + isBitSet(pawnPosition, 40 + 2)) * 0.1 * pieceValue['p'];
             }
         }
@@ -987,6 +1019,8 @@ private:
     int pieceValue[256]{};
     uint64_t whitePassPawn[8][8]{};
     uint64_t blackPassPawn[8][8]{};
+    uint64_t darkSquares = 0xAA55AA55AA55AA55;
+    uint64_t lightSquares = 0x55AA55AA55AA55AA;
 
     // board hash
     uint64_t boardHash = 0;

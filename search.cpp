@@ -16,6 +16,7 @@ class Search {
 
     Board* board;
     vector<TTEntry> ttable;
+    vector<TTEntry> qttable;
 
     int nodes = 0;
     int qNodes = 0;
@@ -33,7 +34,7 @@ class Search {
     high_resolution_clock::time_point startTime;
     long hardTimeLimitMs{};
     vector<string> orderedMovesLastRound;
-//    ofstream ofile;
+    ofstream ofile;
 
     struct Node {
         int eval{0};
@@ -51,11 +52,11 @@ class Search {
         return isManual != nullptr && strcmp(isManual, "1") == 0;
     }
 
-//    inline void logMsg(string msg) {
-//        if (isManual()) {
-//            ofile << msg << "\n";
-//        }
-//    }
+    inline void logMsg(string msg) {
+        if (isManual()) {
+            ofile << msg << "\n";
+        }
+    }
 
     inline bool shouldQuit() {
         auto currentTime = high_resolution_clock::now();
@@ -66,13 +67,11 @@ class Search {
     public:
 
     Search() {
+//        ofile.open("log.txt");
         for(int i=0;i<TTSize;i++) {
             ttable.emplace_back();
+            qttable.emplace_back();
         }
-    }
-
-    ~Search(){
-//        delete[] ttable;
     }
 
     void logMembers() {
@@ -131,7 +130,7 @@ class Search {
                 break;
             }
 
-            auto result = negamax(NEGATIVE_NUM, POSITIVE_NUM, depth, depth, true);
+            auto result = negamax(NEGATIVE_NUM, POSITIVE_NUM, depth, depth, false);
 
             // hard time limit has passed, don't use the above result
             if (shouldQuit() && depth != START_DEPTH) {
@@ -146,12 +145,6 @@ class Search {
             stringstream ss(result.moves);
             bestMove = "";
             ss >> bestMove;
-
-//            cout << "depth " << depth << endl;
-//            for(const auto& move: orderedMovesLastRound) {
-//                cout << move << ", ";
-//            }
-//            cout << endl;
 
             // if we find checkmate, there is no need to search deeper
             if (result.eval >= board->checkmateEval) {
@@ -175,7 +168,7 @@ class Search {
     Node negamax(int alpha, int beta, int depth, int maxDepth, bool nullAllowed) {
         nodes++;
 
-        if (board->isPositionRepeated()) {
+        if (nullAllowed && board->isPositionRepeated()) {
             // give three-fold repetition the eval 0, so we go for it in worse positions and avoid it in good positions.
             return {0, ""};
         }
@@ -185,31 +178,25 @@ class Search {
         const TTEntry& ttEntry = ttable[board -> getHash() % TTSize];
         string ttMove;
         if (ttEntry.hash == board -> getHash() && alpha == beta - 1) {
-            cacheHit++;
-            // TODO remove
-//            if (abs(ttEntry.eval) >= board->checkmateEval) {
-//                cout << "checkmate eval: " << ttEntry.eval << " pv: " << ttEntry.move <<  " flag " << ttEntry.flag << endl;
-//            }
-
-            if (ttEntry.depth >= depth) {
-                if (ttEntry.flag == TTFlagExact) {
-                    return {ttEntry.eval, ttEntry.move};
-                } else if (ttEntry.flag == TTFlagBeta && ttEntry.eval >= beta) {
-                    return {beta, ""};
-                } else if (ttEntry.flag == TTFlagAlpha && ttEntry.eval <= alpha) {
-                    return {alpha, ""};
+            if (alpha == beta -1 ) {
+                cacheHit++;
+                if (ttEntry.depth >= depth) {
+                    if (ttEntry.flag == TTFlagExact) {
+                        return {ttEntry.eval, ttEntry.move};
+                    } else if (ttEntry.flag == TTFlagBeta && ttEntry.eval >= beta) {
+                        return {beta, ""};
+                    } else if (ttEntry.flag == TTFlagAlpha && ttEntry.eval <= alpha) {
+                        return {alpha, ""};
+                    }
                 }
+
+                ttMove = ttEntry.move;
+                cacheFutileHit++;
             }
-
-            ttMove = ttEntry.move;
-            cacheFutileHit++;
-        }
-
-//        if (depth == maxDepth)
-//            cout << "ttEntry didn't return " << endl;
-
-        if (!board->isKingPresent()) {
+        } else if (!board -> isKingPresent()){
             return {-(Board::checkmateEval + depth), ""};
+        } else if (depth > 3){
+            depth -= 1;
         }
 
         if (depth == 0) {
@@ -282,16 +269,16 @@ class Search {
             board->processMove(move);
             Node result;
             if (index == 0) {
-                result = negamax(-beta, -alpha, depth - 1, maxDepth, nullAllowed);
+                result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
                 result.eval = -result.eval;
             } else {
-                result = negamax(-alpha - 1, -alpha, depth - 1, maxDepth, nullAllowed);
+                result = negamax(-alpha - 1, -alpha, depth - 1, maxDepth, true);
                 result.eval = -result.eval;
                 if (result.eval > alpha && result.eval < beta) {
                     // pvs failed, do full search
                     // logmsg(format("{}m {} md {} d {} search failed", prefix, move, maxDepth, depth));
                     pvsFailure++;
-                    result = negamax(-beta, -alpha, depth - 1, maxDepth, nullAllowed);
+                    result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
                     result.eval = -result.eval;
                 } else {
                     pvsSuccess++;
@@ -344,27 +331,24 @@ class Search {
     Node quiescenceSearch(int alpha, int beta, int depth, int minmaxDepth) {
         qNodes++;
 
-        // Check transposition table for cached result
-//        const TTEntry& ttEntry = ttable[board -> getHash() % TTSize];
-//        string ttMove;
-//        if (ttEntry.hash == board -> getHash()) {
-//            cacheHit++;
-//            if (ttEntry.depth >= depth) {
-//                if (ttEntry.flag == TTFlagExact) {
-////                    cout << "ttEntry exact: eval " << ttEntry.eval << " move " << ttEntry->move << endl;
-//                    return {ttEntry.eval, ttEntry.move};
-//                } else if (ttEntry.flag == TTFlagBeta && ttEntry.eval >= beta) {
-////                    cout << "ttEntry beta" << endl;
-//                    return {beta, ""};
-//                } else if (ttEntry.flag == TTFlagAlpha && ttEntry.eval <= alpha) {
-////                    cout << "ttEntry alpha" << endl;
-//                    return {alpha, ""};
-//                }
-//            }
-//
-//            ttMove = ttEntry.move;
-//            cacheFutileHit++;
-//        }
+        //   Check transposition table for cached result
+        const TTEntry& ttEntry = qttable[board -> getHash() % TTSize];
+        string ttMove;
+        if (ttEntry.hash == board -> getHash() && alpha == beta - 1) {
+            cacheHit++;
+            if (ttEntry.depth >= depth) {
+                if (ttEntry.flag == TTFlagExact) {
+                    return {ttEntry.eval, ttEntry.move};
+                } else if (ttEntry.flag == TTFlagBeta && ttEntry.eval >= beta) {
+                    return {beta, ""};
+                } else if (ttEntry.flag == TTFlagAlpha && ttEntry.eval <= alpha) {
+                    return {alpha, ""};
+                }
+            }
+
+            ttMove = ttEntry.move;
+            cacheFutileHit++;
+        }
 
 
         if (!board->isKingPresent()) {
@@ -395,9 +379,9 @@ class Search {
 //            prefix += "  ";
 //        }
 
-//        if (!ttMove.empty()) {
-//            reorderMoves(legalMoves, ttMove);
-//        }
+        if (!ttMove.empty()) {
+            reorderMoves(legalMoves, ttMove);
+        }
 
 
         string bestMoves;
@@ -405,10 +389,12 @@ class Search {
         int ttflag = TTFlagAlpha;
         for(const auto& move: legalMoves) {
             // logmsg(format("{}qSearch m {} md {} d {}", prefix, move, minmaxDepth, depth));
+//            logMsg(format("{}m {} h {}", prefix, move, board->getHash()));
             board->processMove(move);
             auto result = quiescenceSearch(-beta, -alpha, depth - 1, minmaxDepth);
             result.eval = -result.eval;
             board->undoMove();
+//            logMsg(format("{}undo m {} h {}", prefix, move, board->getHash()));
 
             if (result.eval > maxEval) {
                 maxEval = result.eval;
@@ -427,16 +413,12 @@ class Search {
             }
         }
 
-//        saveInTT(bestMoves, maxEval, 0, ttflag);
+        saveInQTT(bestMoves, maxEval, depth, ttflag);
 
         return {maxEval, bestMoves};
     }
 
     void saveInTT(const string& move, int eval, int depth, int flag) {
-//        if (move == "" && abs(eval) >= board->checkmateEval) {
-//            cout << "checkmate eval: " << eval << " pv: " << move <<  " flag " << flag << endl;
-//        }
-
         cacheSave++;
         int key = board->getHash() % TTSize;
 
@@ -450,27 +432,43 @@ class Search {
         ttable[key].update(board->getHash(), move, eval, depth, flag);
     }
 
-    void reorderMoves(vector<string> &legalMoves, string& ttMoves) {
-        string ttMove = getFirstMove(ttMoves);
+    void saveInQTT(const string& move, int eval, int depth, int flag) {
+        cacheSave++;
+        int key = board->getHash() % TTSize;
 
-        bool wasPresent = erase(legalMoves, ttMove);
-        if (wasPresent)
-            legalMoves.insert(legalMoves.begin(), ttMove);
-        else {
-            cout << board -> printBoard() << endl;
-            cout << "turn: " << board->turn << endl;
-            cout << "move: " << ttMove << endl;
-            cout << "legalMove: ";
-            for(auto& move: legalMoves) {
-                cout << move << ", ";
-            }
-            cout << endl;
-            cout << "prevMove: " << board->prevMoves[board->prevMoves.size() - 1] << endl;
-            cout << "EpCol: " << board->enPassantCol << endl;
+        auto entry = &qttable[key];
 
-            cout << "-------------------" << endl;
-            wrongEntry++;
+        if (board->getHash() == entry->hash && entry->depth > depth) {
+            return;
         }
+
+        cacheSaveSuccess++;
+
+        qttable[key].update(board->getHash(), move, eval, depth, flag);
+    }
+
+    void reorderMoves(vector<string> &legalMoves, string& ttMoves) {
+        return;
+//        string ttMove = getFirstMove(ttMoves);
+//
+//        bool wasPresent = erase(legalMoves, ttMove);
+//        if (wasPresent)
+//            legalMoves.insert(legalMoves.begin(), ttMove);
+//        else {
+//            cout << board -> printBoard() << endl;
+//            cout << "turn: " << board->turn << endl;
+//            cout << "move: " << ttMove << endl;
+//            cout << "legalMove: ";
+//            for(auto& move: legalMoves) {
+//                cout << move << ", ";
+//            }
+//            cout << endl;
+//            cout << "prevMove: " << board->prevMoves[board->prevMoves.size() - 1] << endl;
+//            cout << "EpCol: " << board->enPassantCol << endl;
+//
+//            cout << "-------------------" << endl;
+//            wrongEntry++;
+//        }
 
     }
 
