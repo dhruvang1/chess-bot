@@ -8,12 +8,33 @@
 
 using namespace std;
 
-struct Capture{
-    int myPieceValue = 0;
-    int otherPieceValue = 0;
+struct Move {
     string move;
-};
+    char movePiece = ' ';
+    char capturePiece = ' ';
+    bool isCapture = false;
+    bool isPromotion = false;
+    bool isCastle = false;
 
+    Move(const string& move, char movePiece) {
+        this -> move = move;
+        this -> movePiece = movePiece;
+    }
+
+    Move(const string& move, char movePiece, bool isCastle, bool isPromotion) {
+        this -> move = move;
+        this -> movePiece = movePiece;
+        this -> isCastle = isCastle;
+        this -> isPromotion = isPromotion;
+    }
+
+    Move(const string& move, char movePiece, char capturePiece) {
+        this -> move = move;
+        this -> movePiece = movePiece;
+        this -> capturePiece = capturePiece;
+        this -> isCapture = true;
+    }
+};
 
 class Board {
 public:
@@ -30,6 +51,9 @@ public:
 
     static inline int checkmateEval = 15000;
     static inline int stalemateEval = 0; // see comments where its used
+
+    // table for keeping values of each piece
+    int pieceValue[256]{};
 
     public:
 
@@ -226,7 +250,7 @@ public:
         }
         else if (hashCount <= 0) {
             cout << "info hash not found: " << boardHash << endl;
-            throw std::invalid_argument("cannot undo from empty list");
+            throw std::invalid_argument("hash not found");
         }
 
         // add turn hash
@@ -431,44 +455,22 @@ public:
         flipTurn();
     }
 
-    void getLegalMoves(bool capturesOnly, vector<string>& promotion) {
-        // simple now, captures before non captures.
-        vector<string> remaining;
-        vector<Capture> capture; // get capture eval diff with it (who captured whom, eg. pawn take piece > piece takes pawn > queen takes pawn)
-        vector<string> castle;
-
-        remaining.reserve(40);
-        capture.reserve(40);
-        castle.reserve(2);
-
+    void getCapturesPromo(vector<Move>& legalMoves) {
         for(int i=0;i<8;i++) {
             for(int j=0;j<8;j++) {
                 if (isPieceOfColor(turn, board[i][j])) {
                     char c = board[i][j];
                     if (isPawn(c)) {
-                        // push two squares if both empty
-                        if (turn == WHITE && i == 1) {
-                            if (isValid(i+2, j) && board[i+1][j] == ' ' && board[i+2][j] == ' ') {
-                                remaining.push_back(encode(i, j, i + 2, j));
-                            }
-                        } else if (turn == BLACK && i == 6) {
-                            if (isValid(i-2, j) && board[i-1][j] == ' ' && board[i-2][j] == ' ') {
-                                remaining.push_back(encode(i, j, i - 2, j));
-                            }
-                        }
-
                         int newI = turn == WHITE ? i + 1 : i - 1;
                         int newJ = j;
                         // push one square if its empty
                         if (isValid(newI, newJ) && board[newI][newJ] == ' ') {
                             // consider promotion case
                             if (newI == 7 || newI == 0) {
-                                promotion.push_back(encodePromotion(i, j, newI, newJ, 'q'));
-                                promotion.push_back(encodePromotion(i, j, newI, newJ, 'r'));
-                                promotion.push_back(encodePromotion(i, j, newI, newJ, 'n'));
-                                promotion.push_back(encodePromotion(i, j, newI, newJ, 'b'));
-                            } else {
-                                remaining.push_back(encode(i, j, newI, newJ));
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'q'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'r'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'n'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'b'), c, false, true);
                             }
                         }
 
@@ -479,12 +481,12 @@ public:
 
                             if (isValid(newI, newJ) && isPieceOfOppositeColor(turn, board[newI][newJ])) {
                                 if (newI == 7 || newI == 0) {
-                                    promotion.push_back(encodePromotion(i, j ,newI, newJ, 'q'));
-                                    promotion.push_back(encodePromotion(i, j ,newI, newJ, 'r'));
-                                    promotion.push_back(encodePromotion(i, j ,newI, newJ, 'n'));
-                                    promotion.push_back(encodePromotion(i, j ,newI, newJ, 'b'));
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'q'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'r'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'n'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'b'), c, false, true);
                                 } else {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
                                 }
                                 continue; // a normal capture or promotion => no en-passant
                             }
@@ -503,7 +505,108 @@ public:
 
                                 // A pawn moved 2 squares in the same column as current capture attempt
                                 if (isPawn(board[currRow][currCol]) && abs(currRow - prevRow) == 2 && currCol == newJ) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[currRow][currCol]], encode(i, j, newI, newJ)});
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[currRow][currCol]);
+                                }
+                            }
+                        }
+                    } else if (isKing(c)) {
+                        for(auto& dir: validMoves[c][i][j]) {
+                            int newI = dir[0] >> 3;
+                            int newJ = dir[0] & 7;
+
+                            if (!isSquareAttackedByColor(newI, newJ, flipColor(turn))) {
+                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
+                                }
+                            }
+                        }
+                    } else {
+                        for(auto& dir: validMoves[c][i][j]) {
+                            for(auto& move: dir) {
+                                int newI = move >> 3;
+                                int newJ = move & 7;
+                                // encountered same color piece
+                                if (isPieceOfColor(turn, board[newI][newJ])) {
+                                    break;
+                                }
+
+                                // captured a piece and can't go beyond
+                                if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void getLegalMoves(vector<Move>& legalMoves) {
+        for(int i=0;i<8;i++) {
+            for(int j=0;j<8;j++) {
+                if (isPieceOfColor(turn, board[i][j])) {
+                    char c = board[i][j];
+                    if (isPawn(c)) {
+                        // push two squares if both empty
+                        if (turn == WHITE && i == 1) {
+                            if (isValid(i+2, j) && board[i+1][j] == ' ' && board[i+2][j] == ' ') {
+                                legalMoves.emplace_back(encode(i, j, i + 2, j), c);
+                            }
+                        } else if (turn == BLACK && i == 6) {
+                            if (isValid(i-2, j) && board[i-1][j] == ' ' && board[i-2][j] == ' ') {
+                                legalMoves.emplace_back(encode(i, j, i - 2, j), c);
+                            }
+                        }
+
+                        int newI = turn == WHITE ? i + 1 : i - 1;
+                        int newJ = j;
+                        // push one square if its empty
+                        if (isValid(newI, newJ) && board[newI][newJ] == ' ') {
+                            // consider promotion case
+                            if (newI == 7 || newI == 0) {
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'q'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'r'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'n'), c, false, true);
+                                legalMoves.emplace_back(encodePromotion(i, j, newI, newJ, 'b'), c, false, true);
+                            } else {
+                                legalMoves.emplace_back(encode(i, j, newI, newJ), c);
+                            }
+                        }
+
+                        // capture
+                        for(auto dir: capturePawnDirs) {
+                            newI = turn == WHITE ? i + dir[0] : i - dir[0];
+                            newJ = j + dir[1];
+
+                            if (isValid(newI, newJ) && isPieceOfOppositeColor(turn, board[newI][newJ])) {
+                                if (newI == 7 || newI == 0) {
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'q'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'r'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'n'), c, false, true);
+                                    legalMoves.emplace_back(encodePromotion(i, j , newI, newJ, 'b'), c, false, true);
+                                } else {
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
+                                }
+                                continue; // a normal capture or promotion => no en-passant
+                            }
+
+                            // en-passant
+                            bool enPassantRow = turn == WHITE ? (i == 4) : (i == 3);
+                            if (isValid(newI, newJ) && enPassantRow && !prevMoves.empty()) {
+                                // check if last move was pawn move
+                                string lastMove = prevMoves[prevMoves.size() - 1];
+
+                                // assume the values are valid
+                                int prevCol = lastMove[0] - 'a';
+                                int prevRow = lastMove[1] - '0' - 1;
+                                int currCol = lastMove[2] - 'a';
+                                int currRow = lastMove[3] - '0' - 1;
+
+                                // A pawn moved 2 squares in the same column as current capture attempt
+                                if (isPawn(board[currRow][currCol]) && abs(currRow - prevRow) == 2 && currCol == newJ) {
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[currRow][currCol]);
                                 }
                             }
                         }
@@ -514,17 +617,17 @@ public:
 
                             if (!isSquareAttackedByColor(newI, newJ, flipColor(turn))) {
                                 if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c);
                                 } else if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
                                 }
                             }
 
                             if (canShortCastle()) {
-                                castle.push_back(encode(i , j, i , 6));
+                                legalMoves.emplace_back(encode(i, j, i, 6), c, true, false);
                             }
                             if (canLongCastle()) {
-                                castle.push_back(encode(i , j, i , 2));
+                                legalMoves.emplace_back(encode(i, j, i, 2), c, true, false);
                             }
                         }
                     } else {
@@ -538,88 +641,18 @@ public:
                                 }
 
                                 if (board[newI][newJ] == ' ') {
-                                    remaining.push_back(encode(i, j, newI, newJ));
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c);
                                 }
 
                                 // captured a piece and can't go beyond
                                 if (isPieceOfOppositeColor(turn, board[newI][newJ])) {
-                                    capture.push_back({pieceValue[c], pieceValue[board[newI][newJ]], encode(i, j, newI, newJ)});
+                                    legalMoves.emplace_back(encode(i, j, newI, newJ), c, board[newI][newJ]);
                                     break;
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-
-        // merge vectors and order them
-
-        // sort the captures
-        if (capture.size() > 1) {
-            // white wants ascending sorting & black wants descending sorting
-            bool isWhiteTurn = turn == WHITE;
-
-            sort(capture.begin(), capture.end(), [&isWhiteTurn](auto &left, auto &right) {
-                if (isWhiteTurn) {
-                    if (left.otherPieceValue == right.otherPieceValue) {
-                        // LVA (least valuable aggressor)
-                        // white has +ve pieceValues => sort ascending (i.e. rook (5) before queen (9))
-                        return left.myPieceValue < right.myPieceValue;
-                    } else {
-                        // MVV (most valuable victim)
-                        // black have -ve pieceValues => sort ascending (i.e. queen (-9) before rook (-5))
-                        return left.otherPieceValue <  right.otherPieceValue;
-                    }
-                } else {
-                    if (left.otherPieceValue == right.otherPieceValue) {
-                        // LVA (least valuable aggressor)
-                        // black has -ve pieceValues => sort descending (i.e. rook (-5) before queen (-9))
-                        return left.myPieceValue > right.myPieceValue;
-                    } else {
-                        // MVV (most valuable victim)
-                        // white has +ve pieceValues => sort descending (i.e. queen before rook)
-                        return left.otherPieceValue >  right.otherPieceValue;
-                    }
-                }
-            });
-        }
-
-
-        if (capturesOnly) {
-            // check detection is too slow
-//            vector<string> check;
-//            vector<string> nonCheck;
-//
-//            // find moves that put king in check
-//            for(auto& rmove: remaining) {
-//                processMove(rmove);
-//                if (isKingInCheck()) {
-//                    check.push_back(rmove);
-//                } else {
-//                    nonCheck.push_back(rmove);
-//                }
-//                undoMove();
-//            }
-//
-//            for(auto& chkmove: check) {
-//                promotion.push_back(chkmove);
-//            }
-
-            for(auto& capmove: capture) {
-                promotion.push_back(capmove.move);
-            }
-        } else {
-            for(auto& move: castle) {
-                promotion.push_back(move);
-            }
-
-            for(auto& move: capture) {
-                promotion.push_back(move.move);
-            }
-
-            for(auto& move: remaining) {
-                promotion.push_back(move);
             }
         }
     }
@@ -934,7 +967,6 @@ private:
     int evalTable[256][2][8][8]{}; // piece, middle game/ end game, row, col
     int gamePhase = 0;
     int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
-    int pieceValue[256]{};
     vector<vector<int>> validMoves[256][8][8]{};
     uint64_t whitePassPawn[8][8]{};
     uint64_t blackPassPawn[8][8]{};

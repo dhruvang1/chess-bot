@@ -48,9 +48,6 @@ class Uci {
     void handle(const string &msg) {
         vector<string> tokens = tokenize(msg);
 
-//        if (board.prevMoves.size() > 6) {
-//            exit(0);
-//        }
         if (msg == "quit") {
             exit(1);
         }
@@ -90,8 +87,6 @@ class Uci {
         } else if (tokens[0] == "go") {
             int whiteTime = 60 * 1000;
             int blackTime = 60 * 1000;
-//            int whiteTime = 300 * 1000;
-//            int blackTime = 300 * 1000;
 
             int whiteInc = 0;
             int blackInc = 0;
@@ -149,11 +144,19 @@ class Uci {
             if (tokens.size() > 1 && tokens[1] == "capture") {
                 capturesOnly = true;
             }
-            vector<string> legalMoveList;
-            board.getLegalMoves(capturesOnly, legalMoveList);
+            vector<Move> legalMoveList;
+            board.getLegalMoves(legalMoveList);
             for(auto& m : legalMoveList) {
-                cout << m << ", ";
+                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", m.move, m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
+
+            cout << "----ordered moves----" << endl;
+            string empty;
+            search.reorderMoves(legalMoveList, empty, board.pieceValue);
+            for(auto& m : legalMoveList) {
+                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", m.move, m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
+            }
+
             cout << endl;
         }
 

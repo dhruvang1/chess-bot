@@ -23,7 +23,6 @@ class Search {
     int cutOff = 0;
     int pvsSuccess = 0;
     int pvsFailure = 0;
-    int wrongEntry = 0;
     int cacheHit= 0;
     int qcacheHit= 0;
     int cacheFutileHit= 0;
@@ -37,7 +36,7 @@ class Search {
     int NULL_MOVE_REDUCTION = 2;
     high_resolution_clock::time_point startTime;
     long hardTimeLimitMs{};
-    vector<string> orderedMovesLastRound;
+    vector<Move> orderedMovesLastRound;
     ofstream ofile;
 
     struct Node {
@@ -92,7 +91,6 @@ class Search {
         cutOff = 0;
         pvsSuccess = 0;
         pvsFailure = 0;
-        wrongEntry = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
         cacheSave = 0;
@@ -172,7 +170,6 @@ class Search {
              << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
         cout << "info qcache " << "save " << qcacheSave << " " << qcacheSaveSuccess << " " << (qcacheSaveSuccess*100)/qcacheSave << " hit " << qcacheHit << " " << qcacheHit - qcacheFutileHit
              << " " << (100*(qcacheHit - qcacheFutileHit))/qcacheHit << endl;
-        cout << "info wrongentry " << wrongEntry << endl;
 
         return bestMove;
     }
@@ -223,13 +220,14 @@ class Search {
             return {maxDepth == START_DEPTH ? board->getBoardEval(): 0, ""};
         }
 
-        vector<string> legalMoves;
+        vector<Move> legalMoves;
         legalMoves.reserve(50);
         // use last round's move as starting point in search
         if (depth == maxDepth && !orderedMovesLastRound.empty()) {
             legalMoves = orderedMovesLastRound;
         } else {
-            board->getLegalMoves(false, legalMoves);
+            board->getLegalMoves(legalMoves);
+            reorderMoves(legalMoves, ttMove, board->pieceValue);
         }
 
         if (legalMoves.empty()) {
@@ -268,18 +266,18 @@ class Search {
 //        }
 
         if (!ttMove.empty()) {
-            reorderMoves(legalMoves, ttMove);
+            reorderMoves(legalMoves, ttMove, board->pieceValue);
         }
 
 
-        vector<pair<int, string>> resultList;
+        vector<pair<int, Move>> resultList;
         string bestMoves;
         int index = 0;
         int ttflag = TTFlagAlpha;
         int maxEval = NEGATIVE_NUM;
-        for(const auto& move: legalMoves) {
+        for(const auto& m: legalMoves) {
             // logmsg(format("{}m {} md {} d {}", prefix, move, maxDepth, depth));
-            board->processMove(move);
+            board->processMove(m.move);
             Node result;
             if (index == 0) {
                 result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
@@ -301,7 +299,7 @@ class Search {
             board->undoMove();
             if (result.eval > maxEval) {
                 maxEval = result.eval;
-                bestMoves = move + " " + result.moves;
+                bestMoves = m.move + " " + result.moves;
             }
 
             if (result.eval > alpha) {
@@ -310,7 +308,7 @@ class Search {
             }
 
             if (depth == maxDepth) {
-                resultList.emplace_back(result.eval, move);
+                resultList.emplace_back(result.eval, m);
             }
 
             if (beta <= alpha) {
@@ -379,31 +377,28 @@ class Search {
         alpha = max(alpha, boardEval);
 
 
-        vector<string> legalMoves;
+        vector<Move> legalMoves;
         legalMoves.reserve(50);
-        board->getLegalMoves(true, legalMoves);
+        board->getCapturesPromo(legalMoves);
         if (legalMoves.empty()) {
             // not perfect
             return {board->getBoardEval(), ""};
         }
+
+        reorderMoves(legalMoves, ttMove, board->pieceValue);
 
 //        string prefix;
 //        for(int i=0;i<minmaxDepth + (QSEARCH_MAX_DEPTH - depth);i++) {
 //            prefix += "  ";
 //        }
 
-        if (!ttMove.empty()) {
-            reorderMoves(legalMoves, ttMove);
-        }
-
-
         string bestMoves;
         int maxEval = alpha;
         int ttflag = TTFlagAlpha;
-        for(const auto& move: legalMoves) {
+        for(const auto& m: legalMoves) {
             // logmsg(format("{}qSearch m {} md {} d {}", prefix, move, minmaxDepth, depth));
 //            logMsg(format("{}m {} h {}", prefix, move, board->getHash()));
-            board->processMove(move);
+            board->processMove(m.move);
             auto result = quiescenceSearch(-beta, -alpha, depth - 1, minmaxDepth);
             result.eval = -result.eval;
             board->undoMove();
@@ -411,7 +406,7 @@ class Search {
 
             if (result.eval > maxEval) {
                 maxEval = result.eval;
-                bestMoves = move + " " + result.moves;
+                bestMoves = m.move + " " + result.moves;
             }
             // logmsg(format("{}qSearch m {} md {} d {} cp {}", prefix, move, minmaxDepth, depth, result.eval));
 
@@ -460,29 +455,28 @@ class Search {
         qttable[key].update(board->getHash(), move, eval, depth, flag);
     }
 
-    void reorderMoves(vector<string> &legalMoves, string& ttMoves) {
-        return;
-//        string ttMove = getFirstMove(ttMoves);
-//
-//        bool wasPresent = erase(legalMoves, ttMove);
-//        if (wasPresent)
-//            legalMoves.insert(legalMoves.begin(), ttMove);
-//        else {
-//            cout << board -> printBoard() << endl;
-//            cout << "turn: " << board->turn << endl;
-//            cout << "move: " << ttMove << endl;
-//            cout << "legalMove: ";
-//            for(auto& move: legalMoves) {
-//                cout << move << ", ";
-//            }
-//            cout << endl;
-//            cout << "prevMove: " << board->prevMoves[board->prevMoves.size() - 1] << endl;
-//            cout << "EpCol: " << board->enPassantCol << endl;
-//
-//            cout << "-------------------" << endl;
-//            wrongEntry++;
-//        }
+    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, const int pieceValue[256]) {
+        string ttMove = getFirstMove(ttMoves);
+        sort(legalMoves.begin(), legalMoves.end(),[pieceValue](const auto &left, const auto &right){
+            int l,r;
+            if (left.isPromotion) {
+                l = 50000 * 20000;
+            } else if (left.isCapture) {
+                l = abs(40000 * pieceValue[left.capturePiece] + pieceValue[left.movePiece]);
+            } else {
+                l = 1000;
+            }
 
+            if (right.isPromotion) {
+                r = 50000 * 20000;
+            } else if (right.isCapture) {
+                r = abs(40000 * pieceValue[right.capturePiece] + pieceValue[right.movePiece]);
+            } else {
+                r = 1000;
+            }
+
+            return r < l;
+        });
     }
 
     static string getFirstMove(string& pv) {
