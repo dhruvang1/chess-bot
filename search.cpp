@@ -23,6 +23,8 @@ class Search {
     int cutOff = 0;
     int pvsSuccess = 0;
     int pvsFailure = 0;
+    int lmrSuccess = 0;
+    int lmrFailure = 0;
     int cacheHit= 0;
     int qcacheHit= 0;
     int cacheFutileHit= 0;
@@ -91,6 +93,8 @@ class Search {
         cutOff = 0;
         pvsSuccess = 0;
         pvsFailure = 0;
+        lmrSuccess = 0;
+        lmrFailure = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
         cacheSave = 0;
@@ -166,6 +170,7 @@ class Search {
         cout << "info depth " << depthEvaluated << " nodes " << nodes << " time " << duration.count() << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
+        cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " " << (cacheSaveSuccess*100)/cacheSave << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
         cout << "info qcache " << "save " << qcacheSave << " " << qcacheSaveSuccess << " " << (qcacheSaveSuccess*100)/qcacheSave << " hit " << qcacheHit << " " << qcacheHit - qcacheFutileHit
@@ -278,21 +283,38 @@ class Search {
         for(const auto& m: legalMoves) {
             // logmsg(format("{}m {} md {} d {}", prefix, move, maxDepth, depth));
             board->processMove(m.move);
+            bool isQuiet = !(m.isPromotion || m.isCapture);
             Node result;
             if (index == 0) {
                 result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
                 result.eval = -result.eval;
             } else {
-                result = negamax(-alpha - 1, -alpha, depth - 1, maxDepth, true);
-                result.eval = -result.eval;
-                if (result.eval > alpha && result.eval < beta) {
-                    // pvs failed, do full search
-                    // logmsg(format("{}m {} md {} d {} search failed", prefix, move, maxDepth, depth));
-                    pvsFailure++;
-                    result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
+                bool doPvs = true;
+                if (index >= 4 && isQuiet && depth > 3 && alpha == beta - 1) {
+                    // LMR, reduce depth by 1
+                    result = negamax(-alpha - 1, -alpha, depth - 2, maxDepth, true);
                     result.eval = -result.eval;
-                } else {
-                    pvsSuccess++;
+                    if (result.eval > alpha) {
+                        // LMR failed
+                        lmrFailure++;
+                    } else {
+                        // LMR success
+                        doPvs = false;
+                        lmrSuccess++;
+                    }
+                }
+
+                if (doPvs) {
+                    result = negamax(-alpha - 1, -alpha, depth - 1, maxDepth, true);
+                    result.eval = -result.eval;
+                    if (result.eval > alpha && result.eval < beta) {
+                        // pvs failed, do full search
+                        pvsFailure++;
+                        result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
+                        result.eval = -result.eval;
+                    } else {
+                        pvsSuccess++;
+                    }
                 }
             }
             // logmsg(format("{}m {} md {} d {} cp {}", prefix, move, maxDepth, depth, result.eval));
