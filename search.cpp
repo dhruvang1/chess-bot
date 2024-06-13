@@ -203,9 +203,11 @@ class Search {
                         return {alpha, ""};
                     }
                 }
-
                 ttMove = ttEntry.move;
                 cacheFutileHit++;
+            } else if (ttEntry.flag == TTFlagExact && ttEntry.depth >= depth && alpha < ttEntry.eval && ttEntry.eval < beta){
+                cacheHit++;
+                ttMove = ttEntry.move;
             }
         } else if (!board -> isKingPresent()){
             return {-(Board::checkmateEval + depth), ""};
