@@ -171,7 +171,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
-        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " " << (cacheSaveSuccess*100)/cacheSave << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
+        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
         cout << "info qcache " << "save " << qcacheSave << " " << qcacheSaveSuccess << " " << (qcacheSaveSuccess*100)/qcacheSave << " hit " << qcacheHit << " " << qcacheHit - qcacheFutileHit
              << " " << (100*(qcacheHit - qcacheFutileHit))/qcacheHit << endl;
@@ -188,26 +188,25 @@ class Search {
         }
 
         // Check transposition table for cached result
-        // We don't use TTable when we are doing full search as it causes issues.
-        const TTEntry& ttEntry = ttable[board -> getHash() % TTSize];
+        const TTEntry* ttEntry = getTTEntry(board -> getHash());
         string ttMove;
-        if (ttEntry.hash == board -> getHash()) {
+        if (ttEntry != nullptr) {
             if (alpha == beta -1 ) {
                 cacheHit++;
-                if (ttEntry.depth >= depth) {
-                    if (ttEntry.flag == TTFlagExact) {
-                        return {ttEntry.eval, ttEntry.move};
-                    } else if (ttEntry.flag == TTFlagBeta && ttEntry.eval >= beta) {
+                if (ttEntry->depth >= depth) {
+                    if (ttEntry->flag == TTFlagExact) {
+                        return {ttEntry->eval, ttEntry->move};
+                    } else if (ttEntry->flag == TTFlagBeta && ttEntry->eval >= beta) {
                         return {beta, ""};
-                    } else if (ttEntry.flag == TTFlagAlpha && ttEntry.eval <= alpha) {
+                    } else if (ttEntry->flag == TTFlagAlpha && ttEntry->eval <= alpha) {
                         return {alpha, ""};
                     }
                 }
-                ttMove = ttEntry.move;
+                ttMove = ttEntry->move;
                 cacheFutileHit++;
-            } else if (ttEntry.flag == TTFlagExact && ttEntry.depth >= depth && alpha < ttEntry.eval && ttEntry.eval < beta){
+            } else if (ttEntry->flag == TTFlagExact && ttEntry->depth >= depth && alpha < ttEntry->eval && ttEntry->eval < beta){
                 cacheHit++;
-                ttMove = ttEntry.move;
+                ttMove = ttEntry->move;
             }
         } else if (!board -> isKingPresent()){
             return {-(Board::checkmateEval + depth), ""};
@@ -452,16 +451,21 @@ class Search {
 
     void saveInTT(const string& move, int eval, int depth, int flag) {
         cacheSave++;
-        int key = board->getHash() % TTSize;
+        int index = (board->getHash() % TTKeySize) * 2;
 
-        auto entry = &ttable[key];
+        auto entry = &ttable[index];
+        auto secondEntry = &ttable[index + 1];
 
-        if (board->getHash() == entry->hash && entry->depth > depth) {
-            return;
+        // fill up the first entry before moving ahead
+        if (entry -> hash == 0) {
+            entry -> update(board->getHash(), move, eval, depth, flag);
+        } else if (depth >= entry -> depth) {
+            secondEntry->update(entry);
+            entry -> update(board->getHash(), move, eval, depth, flag);
+        } else {
+            secondEntry -> update(board->getHash(), move, eval, depth, flag);
         }
-
         cacheSaveSuccess++;
-        ttable[key].update(board->getHash(), move, eval, depth, flag);
     }
 
     void saveInQTT(const string& move, int eval, int depth, int flag) {
@@ -477,6 +481,17 @@ class Search {
         qcacheSaveSuccess++;
 
         qttable[key].update(board->getHash(), move, eval, depth, flag);
+    }
+
+    TTEntry* getTTEntry(uint64_t hash) {
+        int index = (hash % TTKeySize) * 2;
+        if (ttable[index].hash == hash) {
+            return &ttable[index];
+        } else if (ttable[index + 1].hash == hash) {
+            return &ttable[index + 1];
+        }
+
+        return nullptr;
     }
 
     static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, const int pieceValue[256]) {
