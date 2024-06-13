@@ -441,9 +441,11 @@ class Search {
 
     static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, const int pieceValue[256]) {
         string ttMove = getFirstMove(ttMoves);
-        sort(legalMoves.begin(), legalMoves.end(),[pieceValue](const auto &left, const auto &right){
+        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, pieceValue](const auto &left, const auto &right){
             int l,r;
-            if (left.isPromotion) {
+            if (left.move == ttMove) {
+                l = 60000 * 20000;
+            } else if (left.isPromotion) {
                 l = 50000 * 20000;
             } else if (left.isCapture) {
                 l = abs(40000 * pieceValue[left.capturePiece] + pieceValue[left.movePiece]);
@@ -451,7 +453,9 @@ class Search {
                 l = 1000;
             }
 
-            if (right.isPromotion) {
+            if (right.move == ttMove) {
+                r = 60000 * 20000;
+            } else if (right.isPromotion) {
                 r = 50000 * 20000;
             } else if (right.isCapture) {
                 r = abs(40000 * pieceValue[right.capturePiece] + pieceValue[right.movePiece]);
