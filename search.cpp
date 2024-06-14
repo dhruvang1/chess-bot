@@ -30,6 +30,7 @@ class Search {
     int cacheFutileHit= 0;
     int cacheSave= 0;
     int cacheSaveSuccess= 0;
+    int deltaPrune = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int NULL_MOVE_REDUCTION = 2;
@@ -94,6 +95,7 @@ class Search {
         cacheFutileHit = 0;
         cacheSave = 0;
         cacheSaveSuccess = 0;
+        deltaPrune = 0;
         orderedMovesLastRound.clear();
         initKillers();
 
@@ -163,6 +165,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
+        cout << "info delta " << deltaPrune << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
 
@@ -374,7 +377,7 @@ class Search {
         board->getCapturesPromo(legalMoves);
         if (legalMoves.empty()) {
             // not perfect
-            return {board->getBoardEval(), ""};
+            return {boardEval, ""};
         }
 
         string tempMove;
@@ -387,7 +390,14 @@ class Search {
 
         string bestMoves;
         int maxEval = alpha;
+        int delta = 300;
         for(const auto& m: legalMoves) {
+            // delta pruning
+            if (m.isCapture && (boardEval + abs(board->pieceValue[m.capturePiece]) + delta < alpha)) {
+                deltaPrune++;
+                continue;
+            }
+
             board->processMove(m.move);
             auto result = quiescenceSearch(-beta, -alpha, depth - 1, minmaxDepth);
             result.eval = -result.eval;
