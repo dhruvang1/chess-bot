@@ -17,6 +17,7 @@ class Search {
     Board* board;
     vector<TTEntry> ttable;
     vector<TTEntry> qttable;
+    vector<string> killers;
 
     int nodes = 0;
     int qNodes = 0;
@@ -94,6 +95,7 @@ class Search {
         cacheSave = 0;
         cacheSaveSuccess = 0;
         orderedMovesLastRound.clear();
+        initKillers();
 
         int myTimeLeft = (board->turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
 
@@ -132,7 +134,7 @@ class Search {
                 break;
             }
 
-            auto result = negamax(NEGATIVE_NUM, POSITIVE_NUM, depth, depth, false);
+            auto result = negamax(NEGATIVE_NUM, POSITIVE_NUM, depth, 0, false);
 
             // hard time limit has passed, don't use the above result
             if (shouldQuit() && depth != START_DEPTH) {
@@ -167,7 +169,7 @@ class Search {
         return bestMove;
     }
 
-    Node negamax(int alpha, int beta, int depth, int maxDepth, bool nullAllowed) {
+    Node negamax(int alpha, int beta, int depth, int ply, bool nullAllowed) {
         nodes++;
 
         if (nullAllowed && board->isPositionRepeated()) {
@@ -203,25 +205,25 @@ class Search {
             depth -= 1;
         }
 
-        if (depth == 0) {
-            const Node& result = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, maxDepth);
+        if (depth <= 0) {
+            const Node& result = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply + 1);
             saveInTT(result.moves, result.eval, depth, TTFlagExact);
             return result;
         }
 
         if (shouldQuit()) {
             // only evaluate if we are just starting
-            return {maxDepth == START_DEPTH ? board->getBoardEval(): 0, ""};
+            return {ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0, ""};
         }
 
         vector<Move> legalMoves;
         legalMoves.reserve(50);
         // use last round's move as starting point in search
-        if (depth == maxDepth && !orderedMovesLastRound.empty()) {
+        if (ply == 0 && !orderedMovesLastRound.empty()) {
             legalMoves = orderedMovesLastRound;
         } else {
             board->getLegalMoves(legalMoves);
-            reorderMoves(legalMoves, ttMove, board->pieceValue);
+            reorderMoves(legalMoves, ttMove, killers[ply], board->pieceValue);
         }
 
         if (legalMoves.empty()) {
@@ -242,7 +244,7 @@ class Search {
         // do null move
         if (nullAllowed && board->getGamePhase() > 0 && depth > 4) {
             board->processNullMove();
-            Node result = negamax(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, maxDepth, false);
+            Node result = negamax(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, ply + 1, false);
             result.eval = -result.eval;
 
             // undo null move
@@ -259,10 +261,6 @@ class Search {
 //            prefix += "  ";
 //        }
 
-        if (!ttMove.empty()) {
-            reorderMoves(legalMoves, ttMove, board->pieceValue);
-        }
-
 
         vector<pair<int, Move>> resultList;
         string bestMoves;
@@ -275,13 +273,13 @@ class Search {
             bool isQuiet = !(m.isPromotion || m.isCapture);
             Node result;
             if (index == 0) {
-                result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
+                result = negamax(-beta, -alpha, depth - 1, ply + 1, true);
                 result.eval = -result.eval;
             } else {
                 bool doPvs = true;
                 if (index >= 4 && isQuiet && depth > 3 && alpha == beta - 1) {
                     // LMR, reduce depth by 1
-                    result = negamax(-alpha - 1, -alpha, depth - 2, maxDepth, true);
+                    result = negamax(-alpha - 1, -alpha, depth - 2, ply + 1, true);
                     result.eval = -result.eval;
                     if (result.eval > alpha) {
                         // LMR failed
@@ -294,12 +292,12 @@ class Search {
                 }
 
                 if (doPvs) {
-                    result = negamax(-alpha - 1, -alpha, depth - 1, maxDepth, true);
+                    result = negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true);
                     result.eval = -result.eval;
                     if (result.eval > alpha && result.eval < beta) {
                         // pvs failed, do full search
                         pvsFailure++;
-                        result = negamax(-beta, -alpha, depth - 1, maxDepth, true);
+                        result = negamax(-beta, -alpha, depth - 1, ply + 1, true);
                         result.eval = -result.eval;
                     } else {
                         pvsSuccess++;
@@ -318,19 +316,22 @@ class Search {
                 ttflag = TTFlagExact;
             }
 
-            if (depth == maxDepth) {
+            if (ply == 0) {
                 resultList.emplace_back(result.eval, m);
             }
 
             if (beta <= alpha) {
                 ttflag = TTFlagBeta;
+                if (isQuiet) {
+                    killers[ply] = m.move;
+                }
                 break;
             }
             index++;
         }
 
 
-        if (depth == maxDepth) {
+        if (ply == 0) {
             // with negamax we should always sort by descending
             sort(resultList.begin(), resultList.end(), [](auto left, auto right) {
                 return right.first < left.first;
@@ -377,7 +378,7 @@ class Search {
         }
 
         string tempMove;
-        reorderMoves(legalMoves, tempMove, board->pieceValue);
+        reorderMoves(legalMoves, tempMove, tempMove, board->pieceValue);
 
 //        string prefix;
 //        for(int i=0;i<minmaxDepth + (QSEARCH_MAX_DEPTH - depth);i++) {
@@ -439,9 +440,16 @@ class Search {
         return nullptr;
     }
 
-    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, const int pieceValue[256]) {
+    void initKillers() {
+        killers.clear();
+        for(int i=0;i<50;i++) {
+            killers.emplace_back();
+        }
+    }
+
+    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, string& killer, const int pieceValue[256]) {
         string ttMove = getFirstMove(ttMoves);
-        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, pieceValue](const auto &left, const auto &right){
+        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, &killer, pieceValue](const auto &left, const auto &right){
             int l,r;
             if (left.move == ttMove) {
                 l = 60000 * 20000;
@@ -449,6 +457,8 @@ class Search {
                 l = 50000 * 20000;
             } else if (left.isCapture) {
                 l = abs(40000 * pieceValue[left.capturePiece] + pieceValue[left.movePiece]);
+            } else if (left.move == killer) {
+                l = 10000;
             } else {
                 l = 1000;
             }
@@ -459,6 +469,8 @@ class Search {
                 r = 50000 * 20000;
             } else if (right.isCapture) {
                 r = abs(40000 * pieceValue[right.capturePiece] + pieceValue[right.movePiece]);
+            } else if (right.move == killer) {
+                r = 10000;
             } else {
                 r = 1000;
             }

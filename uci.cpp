@@ -152,7 +152,7 @@ class Uci {
 
             cout << "----ordered moves----" << endl;
             string empty;
-            search.reorderMoves(legalMoveList, empty, board.pieceValue);
+            search.reorderMoves(legalMoveList, empty, empty, board.pieceValue);
             for(auto& m : legalMoveList) {
                 cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", m.move, m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
