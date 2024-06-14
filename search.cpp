@@ -226,7 +226,7 @@ class Search {
             legalMoves = orderedMovesLastRound;
         } else {
             board->getLegalMoves(legalMoves);
-            reorderMoves(legalMoves, ttMove, killers[ply], board->pieceValue);
+            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], board->pieceValue);
         }
 
         if (legalMoves.empty()) {
@@ -326,7 +326,10 @@ class Search {
             if (beta <= alpha) {
                 ttflag = TTFlagBeta;
                 if (isQuiet) {
-                    killers[ply] = m.move;
+                    if (killers[2*ply] != m.move) {
+                        killers[2*ply + 1] = killers[2*ply];
+                        killers[2*ply] = m.move;
+                    }
                 }
                 break;
             }
@@ -381,7 +384,7 @@ class Search {
         }
 
         string tempMove;
-        reorderMoves(legalMoves, tempMove, tempMove, board->pieceValue);
+        reorderMoves(legalMoves, tempMove, tempMove, tempMove, board->pieceValue);
 
 //        string prefix;
 //        for(int i=0;i<minmaxDepth + (QSEARCH_MAX_DEPTH - depth);i++) {
@@ -452,14 +455,14 @@ class Search {
 
     void initKillers() {
         killers.clear();
-        for(int i=0;i<50;i++) {
+        for(int i=0;i<100;i++) {
             killers.emplace_back();
         }
     }
 
-    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, string& killer, const int pieceValue[256]) {
+    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, string& killer1, string& killer2, const int pieceValue[256]) {
         string ttMove = getFirstMove(ttMoves);
-        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, &killer, pieceValue](const auto &left, const auto &right){
+        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, &killer1, &killer2, pieceValue](const auto &left, const auto &right){
             int l,r;
             if (left.move == ttMove) {
                 l = 60000 * 20000;
@@ -467,8 +470,10 @@ class Search {
                 l = 50000 * 20000;
             } else if (left.isCapture) {
                 l = abs(40000 * pieceValue[left.capturePiece] + pieceValue[left.movePiece]);
-            } else if (left.move == killer) {
+            } else if (left.move == killer1) {
                 l = 10000;
+            } else if (left.move == killer2) {
+                l = 9000;
             } else {
                 l = 1000;
             }
@@ -479,8 +484,10 @@ class Search {
                 r = 50000 * 20000;
             } else if (right.isCapture) {
                 r = abs(40000 * pieceValue[right.capturePiece] + pieceValue[right.movePiece]);
-            } else if (right.move == killer) {
+            } else if (right.move == killer1) {
                 r = 10000;
+            } else if (right.move == killer2) {
+                r = 9000;
             } else {
                 r = 1000;
             }
