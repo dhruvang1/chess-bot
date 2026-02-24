@@ -1,40 +1,11 @@
 #include <string>
 #include <vector>
-#include <cstdio>
 #include <unordered_map>
-#include "staticEvals.cpp"
+#include "move.h"
+#include "staticEvals.h"
 #include "hash.cpp"
-#include "transposition.cpp"
 
 using namespace std;
-
-struct Move {
-    string move;
-    char movePiece = ' ';
-    char capturePiece = ' ';
-    bool isCapture = false;
-    bool isPromotion = false;
-    bool isCastle = false;
-
-    Move(const string& move, char movePiece) {
-        this -> move = move;
-        this -> movePiece = movePiece;
-    }
-
-    Move(const string& move, char movePiece, bool isCastle, bool isPromotion) {
-        this -> move = move;
-        this -> movePiece = movePiece;
-        this -> isCastle = isCastle;
-        this -> isPromotion = isPromotion;
-    }
-
-    Move(const string& move, char movePiece, char capturePiece) {
-        this -> move = move;
-        this -> movePiece = movePiece;
-        this -> capturePiece = capturePiece;
-        this -> isCapture = true;
-    }
-};
 
 class Board {
 public:
@@ -939,6 +910,19 @@ public:
         return ans;
     }
 
+    int getCastlingRights() const {
+        int rights = 0;
+        if (whiteKingMoved == 0 && whiteShortRookMoved == 0) rights |= 1;
+        if (whiteKingMoved == 0 && whiteLongRookMoved == 0)  rights |= 2;
+        if (blackKingMoved == 0 && blackShortRookMoved == 0) rights |= 4;
+        if (blackKingMoved == 0 && blackLongRookMoved == 0)  rights |= 8;
+        return rights;
+    }
+
+    char getBoardChar(int row, int col) const {
+        return board[row][col];
+    }
+
     uint64_t getHash() const {
         return boardHash;
     }
@@ -1284,8 +1268,8 @@ private:
         }
 
         if (isRookOfColor(turn, board[row][0]) &&
-            ((turn == WHITE && whiteShortRookMoved == 0 && whiteKingMoved == 0) ||
-             (turn == BLACK && blackShortRookMoved == 0 && blackKingMoved == 0))) {
+            ((turn == WHITE && whiteLongRookMoved == 0 && whiteKingMoved == 0) ||
+             (turn == BLACK && blackLongRookMoved == 0 && blackKingMoved == 0))) {
             return !isSquareAttackedByColor(row, 2, flipColor(turn)) &&
                    !isSquareAttackedByColor(row, 3, flipColor(turn)) &&
                    !isSquareAttackedByColor(row, 4, flipColor(turn));
@@ -1489,7 +1473,7 @@ private:
     }
 
     static inline bool isRookAtLongHome(Color color, int row, int col) {
-        return col == 7 && (color == WHITE ? row == 0 : row == 7);
+        return col == 0 && (color == WHITE ? row == 0 : row == 7);
     }
 
     static inline Color flipColor(Color color) {

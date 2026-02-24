@@ -11,4 +11,8 @@ add_executable(chess_engine main.cpp uci.cpp
         staticEvals.cpp
         hash.cpp
         transposition.cpp
+        magicBoard.cpp
+        staticEvals.h
 )
+
+add_executable(test_board test/test_board.cpp staticEvals.cpp)

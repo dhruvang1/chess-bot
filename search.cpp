@@ -2,10 +2,10 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <format>
 #include <sstream>
 #include <fstream>
 #include "board.cpp"
+#include "transposition.cpp"
 
 using namespace std;
 using namespace std::chrono;
@@ -36,6 +36,7 @@ class Search {
     int NULL_MOVE_REDUCTION = 2;
     high_resolution_clock::time_point startTime;
     long hardTimeLimitMs{};
+    int handicapTimeLeftMs = INT_MAX;
     vector<Move> orderedMovesLastRound;
     ofstream ofile;
 
@@ -99,10 +100,11 @@ class Search {
         orderedMovesLastRound.clear();
         initKillers();
 
-        int myTimeLeft = (board->turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
+        int actualTimeLeft = (board->turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
+        int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
-        // assume 30 moves for the game
-        long softTimeLimitMs = myTimeLeft / 30;
+        // assume 60 moves for the game
+        long softTimeLimitMs = myTimeLeft / 60;
         if (board->prevMoves.size() < 16) {
             // keep lower time limit in 16 plies of opening
             softTimeLimitMs = myTimeLeft / 100;
@@ -114,12 +116,16 @@ class Search {
             softTimeLimitMs = myTimeLeft / 50;
         }
 
-        if (myTimeLeft < 5 * 1000) {
+        if (myTimeLeft < 10 * 1000) {
+            // you can use 1x soft time limit
+            hardTimeLimitMs = softTimeLimitMs;
+        }
+        else if (myTimeLeft < 15 * 1000) {
             // you can use 2x soft time limit
             hardTimeLimitMs = 2 * softTimeLimitMs;
         } else {
-            // you can use min of (3x as much softLimit, or remaining time leaving 4s)
-            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 4000L);
+            // you can use min of (3x as much softLimit, or remaining time leaving 15s)
+            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
         }
 
         startTime = high_resolution_clock::now();
@@ -160,6 +166,10 @@ class Search {
 
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
+
+        int myInc = (board->turn == Board::WHITE) ? whiteIncMs : blackIncMs;
+        handicapTimeLeftMs = handicapTimeLeftMs - (int)duration.count() + myInc;
+        if (handicapTimeLeftMs < 0) handicapTimeLeftMs = 0;
 
         cout << "info depth " << depthEvaluated << " nodes " << nodes << " time " << duration.count() << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;

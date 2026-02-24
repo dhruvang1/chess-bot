@@ -1,2 +1,4 @@
 cmake-build-*
 chess_engine_*
+build/**
+.idea/**
