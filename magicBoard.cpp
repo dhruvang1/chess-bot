@@ -504,6 +504,11 @@ public:
         return boardHash;
     }
 
+    size_t moveCount() const { return prevMoves.size(); }
+    bool hasMoves() const { return !prevMoves.empty(); }
+    string getMoveStr(size_t i) const { return prevMoves[i].move; }
+    string getLastMoveStr() const { return prevMoves.back().move; }
+
     int getCastlingRights() {
         return castlingRights;
     }

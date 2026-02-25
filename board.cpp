@@ -927,6 +927,10 @@ public:
         return boardHash;
     }
 
+    size_t moveCount() const { return prevMoves.size(); }
+    bool hasMoves() const { return !prevMoves.empty(); }
+    string getMoveStr(size_t i) const { return prevMoves[i]; }
+    string getLastMoveStr() const { return prevMoves.back(); }
 
 private:
     // Capital chars for white, small chars for black

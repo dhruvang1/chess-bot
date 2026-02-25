@@ -4,7 +4,15 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+
+#ifdef USE_MAGIC_BOARD
+#include "magicBoard.cpp"
+using BoardType = MagicBoard;
+#else
 #include "board.cpp"
+using BoardType = Board;
+#endif
+
 #include "transposition.cpp"
 
 using namespace std;
@@ -14,7 +22,7 @@ class Search {
     static const int POSITIVE_NUM = 1 << 30;
     static const int NEGATIVE_NUM = - POSITIVE_NUM;
 
-    Board* board;
+    BoardType* board;
     vector<TTEntry> ttable;
     vector<TTEntry> qttable;
     vector<string> killers;
@@ -83,7 +91,7 @@ class Search {
         cout << "TTable: " << ttable.size() << "  " << ttable.capacity() << endl;
     }
 
-    string getBestMove(Board& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
+    string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         this->board = &currentBoard;
         nodes = 0;
         qNodes = 0;
@@ -100,18 +108,18 @@ class Search {
         orderedMovesLastRound.clear();
         initKillers();
 
-        int actualTimeLeft = (board->turn == Board::WHITE) ? whiteTimeMs : blackTimeMs;
+        int actualTimeLeft = (board->turn == BoardType::WHITE) ? whiteTimeMs : blackTimeMs;
         int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
         // assume 60 moves for the game
         long softTimeLimitMs = myTimeLeft / 60;
-        if (board->prevMoves.size() < 16) {
+        if (board->moveCount() < 16) {
             // keep lower time limit in 16 plies of opening
             softTimeLimitMs = myTimeLeft / 100;
-        } else if (board->prevMoves.size() < 32) {
+        } else if (board->moveCount() < 32) {
             // next 16 plies of late opening / middle game
             softTimeLimitMs = myTimeLeft / 80;
-        } else if (board->prevMoves.size() < 64) {
+        } else if (board->moveCount() < 64) {
             // next 16 plies of pure middle game
             softTimeLimitMs = myTimeLeft / 50;
         }
@@ -167,7 +175,7 @@ class Search {
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
 
-        int myInc = (board->turn == Board::WHITE) ? whiteIncMs : blackIncMs;
+        int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         handicapTimeLeftMs = handicapTimeLeftMs - (int)duration.count() + myInc;
         if (handicapTimeLeftMs < 0) handicapTimeLeftMs = 0;
 
@@ -212,7 +220,7 @@ class Search {
                 ttMove = ttEntry->move;
             }
         } else if (!board -> isKingPresent()){
-            return {-(Board::checkmateEval + depth), ""};
+            return {-(BoardType::checkmateEval + depth), ""};
         } else if (depth > 3){
             // internal iterative deepening
             depth -= 1;
@@ -245,12 +253,12 @@ class Search {
             // The below checks the line when we reach down a valid path and there are no legal moves.
             if (board->isKingInCheck()) {
                 // this is checkmate
-                return {-(Board::checkmateEval + depth), ""};
+                return {-(BoardType::checkmateEval + depth), ""};
             } else {
                 // this is stalemate.
                 // stalemate is still considered "bad" to not incentivize going for it in good or slightly bad positions.
                 // its given eval of a minor piece => if the position is worse than a minor piece, than stalemate is considered better so "try" to go for it.
-                return {-(Board::stalemateEval), ""};
+                return {-(BoardType::stalemateEval), ""};
             }
         }
 
@@ -371,7 +379,7 @@ class Search {
         qNodes++;
 
         if (!board->isKingPresent()) {
-            return { -(Board::checkmateEval + depth), ""};
+            return { -(BoardType::checkmateEval + depth), ""};
         }
 
         if (depth == 0) {

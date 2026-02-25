@@ -10,7 +10,7 @@ using namespace std;
 class Uci {
 
     private:
-    Board board;
+    BoardType board;
     Search search;
     int moves = 0;
     static inline vector<string> openingsWhite{"e2e4", "d2d4", "c2c4"};
@@ -58,7 +58,7 @@ class Uci {
         } else if (msg == "isready") {
             cout << "readyok" << endl;
         } else if (msg == "ucinewgame") {
-            board = Board();
+            board = BoardType();
             search = Search();
             moves = 0;
         } else if(tokens[0] == "position") {
@@ -105,10 +105,10 @@ class Uci {
             }
 
             string bestMove;
-            if (board.prevMoves.empty()) {
+            if (!board.hasMoves()) {
                 bestMove = openingsWhite[rand() % openingsWhite.size()];
-            } else if (board.prevMoves.size() == 1) {
-                string firstMove = board.prevMoves[0];
+            } else if (board.moveCount() == 1) {
+                string firstMove = board.getMoveStr(0);
                 if (openingsBlack.find(firstMove) != openingsBlack.end()) {
                     bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
                 } else {
@@ -123,7 +123,7 @@ class Uci {
 
             cout << "bestmove " << bestMove << endl;
         } else if (tokens[0] == "undo") {
-            if (board.prevMoves[board.prevMoves.size() - 1] == "null") {
+            if (board.getLastMoveStr() == "null") {
                 board.undoNullMove();
             } else {
                 board.undoMove();
@@ -131,7 +131,7 @@ class Uci {
             moves--;
         } else if (tokens[0] == "eval") {
             if (tokens.size() > 1) {
-                Board boardCpy = board;
+                BoardType boardCpy = board;
                 for(int i = 1; i < tokens.size();i++) {
                     boardCpy.processMove(tokens[i]);
                     cout << tokens[i] << " " << boardCpy.getBoardEval() << endl;
