@@ -1,6 +1,7 @@
 #include <cassert>
 #include <iostream>
 #include <string>
+#include <algorithm>
 #include "../board.cpp"
 #include "../magicBoard.cpp"
 
@@ -42,6 +43,81 @@ void verifyMatch(Board& ob, MagicBoard& mb, const string& context) {
              << " | " << context << endl;
         // assert(false); // don't uncomment because there is a bug in old board
     }
+
+    // isSquareAttackedByColor for every square and both colors
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) {
+            bool obWhite = ob.isSquareAttackedByColor(i, j, Board::WHITE);
+            bool mbWhite = mb.isSquareAttackedByColor(i, j, MagicBoard::WHITE);
+            if (obWhite != mbWhite) {
+                cerr << "ATTACK MISMATCH (WHITE) at (" << i << "," << j << "): "
+                     << "old=" << obWhite << " new=" << mbWhite
+                     << " | " << context << endl;
+                assert(false);
+            }
+
+            bool obBlack = ob.isSquareAttackedByColor(i, j, Board::BLACK);
+            bool mbBlack = mb.isSquareAttackedByColor(i, j, MagicBoard::BLACK);
+            if (obBlack != mbBlack) {
+                cerr << "ATTACK MISMATCH (BLACK) at (" << i << "," << j << "): "
+                     << "old=" << obBlack << " new=" << mbBlack
+                     << " | " << context << endl;
+                assert(false);
+            }
+        }
+    }
+
+    // Verify isKingInCheck
+    bool obCheck = ob.isKingInCheck();
+    bool mbCheck = mb.isKingInCheck();
+    if (obCheck != mbCheck) {
+        cerr << "KING IN CHECK MISMATCH: "
+             << "old=" << obCheck << " new=" << mbCheck
+             << " | " << context << endl;
+        assert(false);
+    }
+
+    // Verify getLegalMoves
+    vector<Move> obMoves, mbMoves;
+    ob.getLegalMoves(obMoves);
+    mb.getLegalMoves(mbMoves);
+
+    // Sort by move string for comparison (order may differ)
+    auto cmp = [](const Move& a, const Move& b) { return a.move < b.move; };
+    sort(obMoves.begin(), obMoves.end(), cmp);
+    sort(mbMoves.begin(), mbMoves.end(), cmp);
+
+    // Deduplicate and compare (Board has a bug where it duplicates castling moves)
+    vector<string> obStrs, mbStrs;
+    for (auto& m : obMoves) obStrs.push_back(m.move);
+    for (auto& m : mbMoves) mbStrs.push_back(m.move);
+    obStrs.erase(unique(obStrs.begin(), obStrs.end()), obStrs.end());
+    mbStrs.erase(unique(mbStrs.begin(), mbStrs.end()), mbStrs.end());
+
+    // Find moves in old but not new
+    for (auto& s : obStrs) {
+        if (!binary_search(mbStrs.begin(), mbStrs.end(), s)) {
+            cerr << "MOVE MISSING in MagicBoard: " << s << " | " << context << endl;
+        }
+    }
+    // Find moves in new but not old
+    for (auto& s : mbStrs) {
+        if (!binary_search(obStrs.begin(), obStrs.end(), s)) {
+            cerr << "EXTRA MOVE in MagicBoard: " << s << " | " << context << endl;
+        }
+    }
+
+    if (obStrs != mbStrs) {
+        cerr << "LEGAL MOVES MISMATCH (after dedup): old=" << obStrs.size()
+             << " new=" << mbStrs.size() << " | " << context << endl;
+        cerr << "OLD: ";
+        for (auto& s : obStrs) cerr << s << " ";
+        cerr << endl;
+        cerr << "NEW: ";
+        for (auto& s : mbStrs) cerr << s << " ";
+        cerr << endl;
+        assert(false);
+    }
 }
 
 void testGame(vector<string> moves, const string& name) {
@@ -66,6 +142,8 @@ void testGame(vector<string> moves, const string& name) {
 
 int main() {
     testGame({"e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4"}, "Ruy Lopez opening");
+
+    testGame({"e2e4", "e7e5", "d1h5", "b8c6", "h5f7"}, "Scholar's mate attack");
 
     testGame({"e2e4", "e7e5", "e1e2", "e8e7"}, "King moves (no castle)");
 

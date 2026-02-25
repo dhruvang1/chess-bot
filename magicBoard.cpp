@@ -5,6 +5,7 @@
 
 #include "move.h"
 #include "staticEvals.h"
+#include "magic_constants.h"
 
 using namespace std;
 
@@ -59,6 +60,12 @@ public:
         initEvalMap();
         initGamePhaseTable();
         initCastlingMask();
+        initKnightAttacks();
+        initKingAttacks();
+        initPawnAttacks();
+        initBishopMasks();
+        initRookMasks();
+        initSliderTables();
     }
 
     void logMembers() {
@@ -267,17 +274,39 @@ public:
     }
 
     void getCapturesPromo(vector<Move>& legalMoves) {
+        generateMoves(legalMoves, true);
     }
 
     void getLegalMoves(vector<Move>& legalMoves) {
+        generateMoves(legalMoves, false);
     }
 
     bool isKingInCheck() {
-        return false;
+        uint64_t myKing = (turn == WHITE) ? whiteKing : blackKing;
+        const int kingSq = __builtin_ctzll(myKing);
+        return isSquareAttackedByColor(kingSq, flipColor(turn));
     }
 
-    bool isSquareAttackedByColor(int i, int j, Color color) {
-        return false;
+    bool isSquareAttackedByColor(int sq, Color color) {
+        uint64_t pawns, knights, bishops, rooks, queens, king;
+        if (color == WHITE) {
+            pawns = whitePawns; knights = whiteKnights; bishops = whiteBishops;
+            rooks = whiteRooks; queens = whiteQueens; king = whiteKing;
+        } else {
+            pawns = blackPawns; knights = blackKnights; bishops = blackBishops;
+            rooks = blackRooks; queens = blackQueens; king = blackKing;
+        }
+
+        // pawn attack is not symmetric, so check the attack with other color
+        return (pawnAttackTable[1 - color][sq] & pawns)
+             | (knightAttackTable[sq] & knights)
+             | (kingAttackTable[sq] & king)
+             | (getBishopAttacks(sq, occupied) & (bishops | queens))
+             | (getRookAttacks(sq, occupied) & (rooks | queens));
+    }
+
+    bool isSquareAttackedByColor(int row, int col, Color color) {
+        return isSquareAttackedByColor(toSq(row, col), color);
     }
 
     int getBoardEval() {
@@ -567,7 +596,7 @@ private:
     }
 
     inline void flipTurn() {
-        turn = turn == WHITE ? BLACK : WHITE;
+        turn = flipColor(turn);
     }
 
     inline void maybeResetEnPassantHash() {
@@ -609,4 +638,314 @@ private:
     // square index → bit mask
     static inline uint64_t sqToBB(int sq) { return 1ULL << sq; }
 
+    static inline Color flipColor(Color color) {
+        return color == WHITE ? BLACK : WHITE;
+    }
+
+    static inline string encodeSq(int from, int to) {
+        string s;
+        s += 'a' + colOf(from);
+        s += '1' + rowOf(from);
+        s += 'a' + colOf(to);
+        s += '1' + rowOf(to);
+        return s;
+    }
+
+    static inline string encodePromoSq(int from, int to, char piece) {
+        string s = encodeSq(from, to);
+        s += piece;
+        return s;
+    }
+
+    void addPromoMoves(vector<Move>& moves, int from, int to, char pawnChar) {
+        moves.emplace_back(encodePromoSq(from, to, 'q'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'r'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'n'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'b'), pawnChar, false, true);
+    }
+
+    void addPromoCaptMoves(vector<Move>& moves, int from, int to, char pawnChar) {
+        moves.emplace_back(encodePromoSq(from, to, 'q'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'r'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'n'), pawnChar, false, true);
+        moves.emplace_back(encodePromoSq(from, to, 'b'), pawnChar, false, true);
+    }
+
+    bool canShortCastle() {
+        int kingSq = (turn == WHITE) ? 4 : 60;
+        int rights = (turn == WHITE) ? WHITE_OO : BLACK_OO;
+        if (!(castlingRights & rights)) return false;
+        if (board[kingSq + 1] != ' ' || board[kingSq + 2] != ' ') return false;
+        Color enemy = flipColor(turn);
+        return !isSquareAttackedByColor(kingSq, enemy)
+            && !isSquareAttackedByColor(kingSq + 1, enemy)
+            && !isSquareAttackedByColor(kingSq + 2, enemy);
+    }
+
+    bool canLongCastle() {
+        int kingSq = (turn == WHITE) ? 4 : 60;
+        int rights = (turn == WHITE) ? WHITE_OOO : BLACK_OOO;
+        if (!(castlingRights & rights)) return false;
+        if (board[kingSq - 1] != ' ' || board[kingSq - 2] != ' ' || board[kingSq - 3] != ' ') return false;
+        Color enemy = flipColor(turn);
+        return !isSquareAttackedByColor(kingSq, enemy)
+            && !isSquareAttackedByColor(kingSq - 1, enemy)
+            && !isSquareAttackedByColor(kingSq - 2, enemy);
+    }
+
+    void addPieceMoves(vector<Move>& legalMoves, uint64_t attacks, int fromSq, char piece, bool capturesOnly) {
+        uint64_t friendly = (turn == WHITE) ? allWhite : allBlack;
+        uint64_t moves = attacks & ~friendly;
+        while (moves) {
+            int to = __builtin_ctzll(moves);
+            moves &= moves - 1;
+            if (board[to] != ' ')
+                legalMoves.emplace_back(encodeSq(fromSq, to), piece, board[to]);
+            else if (!capturesOnly)
+                legalMoves.emplace_back(encodeSq(fromSq, to), piece);
+        }
+    }
+
+    void generateMoves(vector<Move>& legalMoves, bool capturesOnly) {
+        uint64_t enemy = (turn == WHITE) ? allBlack : allWhite;
+        Color enemyColor = flipColor(turn);
+
+        // --- Pawns ---
+        uint64_t pawns = (turn == WHITE) ? whitePawns : blackPawns;
+        char pawnChar = (turn == WHITE) ? 'P' : 'p';
+        int pushDir   = (turn == WHITE) ? 8 : -8;
+        int startRank = (turn == WHITE) ? 1 : 6;
+        int promoRank = (turn == WHITE) ? 7 : 0;
+
+        uint64_t temp = pawns;
+        while (temp) {
+            int sq = __builtin_ctzll(temp);
+            temp &= temp - 1;
+
+            int r = rowOf(sq);
+
+            // Single push
+            int pushSq = sq + pushDir;
+            if (pushSq >= 0 && pushSq < 64 && board[pushSq] == ' ') {
+                if (rowOf(pushSq) == promoRank) {
+                    addPromoMoves(legalMoves, sq, pushSq, pawnChar);
+                } else if (!capturesOnly) {
+                    legalMoves.emplace_back(encodeSq(sq, pushSq), pawnChar);
+                }
+
+                // Double push
+                if (!capturesOnly) {
+                    int doubleSq = sq + pushDir * 2;
+                    if (r == startRank && board[doubleSq] == ' ') {
+                        legalMoves.emplace_back(encodeSq(sq, doubleSq), pawnChar);
+                    }
+                }
+            }
+
+            // Captures
+            uint64_t attacks = pawnAttackTable[turn][sq];
+            uint64_t captures = attacks & enemy;
+            while (captures) {
+                int to = __builtin_ctzll(captures);
+                captures &= captures - 1;
+                if (rowOf(to) == promoRank) {
+                    addPromoCaptMoves(legalMoves, sq, to, pawnChar);
+                } else {
+                    legalMoves.emplace_back(encodeSq(sq, to), pawnChar, board[to]);
+                }
+            }
+
+            // En passant
+            if (enPassantCol >= 0) {
+                int epRank = (turn == WHITE) ? 5 : 2;
+                int epSq = toSq(epRank, enPassantCol);
+                if (attacks & sqToBB(epSq)) {
+                    int capturedSq = epSq - pushDir;
+                    legalMoves.emplace_back(encodeSq(sq, epSq), pawnChar, board[capturedSq]);
+                }
+            }
+        }
+
+        // --- Knights ---
+        uint64_t knights = (turn == WHITE) ? whiteKnights : blackKnights;
+        char knightChar = (turn == WHITE) ? 'N' : 'n';
+        temp = knights;
+        while (temp) {
+            int sq = __builtin_ctzll(temp);
+            temp &= temp - 1;
+            addPieceMoves(legalMoves, knightAttackTable[sq], sq, knightChar, capturesOnly);
+        }
+
+        // --- Bishops ---
+        uint64_t bishops = (turn == WHITE) ? whiteBishops : blackBishops;
+        char bishopChar = (turn == WHITE) ? 'B' : 'b';
+        temp = bishops;
+        while (temp) {
+            int sq = __builtin_ctzll(temp);
+            temp &= temp - 1;
+            addPieceMoves(legalMoves, getBishopAttacks(sq, occupied), sq, bishopChar, capturesOnly);
+        }
+
+        // --- Rooks ---
+        uint64_t rooks = (turn == WHITE) ? whiteRooks : blackRooks;
+        char rookChar = (turn == WHITE) ? 'R' : 'r';
+        temp = rooks;
+        while (temp) {
+            int sq = __builtin_ctzll(temp);
+            temp &= temp - 1;
+            addPieceMoves(legalMoves, getRookAttacks(sq, occupied), sq, rookChar, capturesOnly);
+        }
+
+        // --- Queens ---
+        uint64_t queens = (turn == WHITE) ? whiteQueens : blackQueens;
+        char queenChar = (turn == WHITE) ? 'Q' : 'q';
+        temp = queens;
+        while (temp) {
+            int sq = __builtin_ctzll(temp);
+            temp &= temp - 1;
+            addPieceMoves(legalMoves, getQueenAttacks(sq, occupied), sq, queenChar, capturesOnly);
+        }
+
+        // --- King ---
+        uint64_t myKing = (turn == WHITE) ? whiteKing : blackKing;
+        char kingChar = (turn == WHITE) ? 'K' : 'k';
+        int kingSq = __builtin_ctzll(myKing);
+        uint64_t kingMoves = kingAttackTable[kingSq] & ~((turn == WHITE) ? allWhite : allBlack);
+        while (kingMoves) {
+            int to = __builtin_ctzll(kingMoves);
+            kingMoves &= kingMoves - 1;
+            if (!isSquareAttackedByColor(to, enemyColor)) {
+                if (board[to] != ' ')
+                    legalMoves.emplace_back(encodeSq(kingSq, to), kingChar, board[to]);
+                else if (!capturesOnly)
+                    legalMoves.emplace_back(encodeSq(kingSq, to), kingChar);
+            }
+        }
+
+        // Castling
+        if (!capturesOnly) {
+            if (canShortCastle()) {
+                legalMoves.emplace_back(encodeSq(kingSq, kingSq + 2), kingChar, true, false);
+            }
+            if (canLongCastle()) {
+                legalMoves.emplace_back(encodeSq(kingSq, kingSq - 2), kingChar, true, false);
+            }
+        }
+    }
+
+    // --- Attack tables ---
+    uint64_t knightAttackTable[64]{};
+    uint64_t kingAttackTable[64]{};
+    uint64_t pawnAttackTable[2][64]{};  // [WHITE][sq], [BLACK][sq]
+    uint64_t bishopMasks[64]{};
+    uint64_t rookMasks[64]{};
+    uint64_t bishopLookup[64][512]{};   // max 2^9
+    uint64_t rookLookup[64][4096]{};    // max 2^12
+
+    void initKnightAttacks() {
+        const int offsets[8][2] = {{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}};
+        for (int sq = 0; sq < 64; sq++) {
+            uint64_t bb = 0;
+            int r = sq / 8, c = sq % 8;
+            for (auto& o : offsets) {
+                int nr = r + o[0], nc = c + o[1];
+                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8)
+                    bb |= 1ULL << (nr * 8 + nc);
+            }
+            knightAttackTable[sq] = bb;
+        }
+    }
+
+    void initKingAttacks() {
+        const int offsets[8][2] = {{-1,-1},{-1,0},{-1,1},{0,-1},{0,1},{1,-1},{1,0},{1,1}};
+        for (int sq = 0; sq < 64; sq++) {
+            uint64_t bb = 0;
+            int r = sq / 8, c = sq % 8;
+            for (auto& o : offsets) {
+                int nr = r + o[0], nc = c + o[1];
+                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8)
+                    bb |= 1ULL << (nr * 8 + nc);
+            }
+            kingAttackTable[sq] = bb;
+        }
+    }
+
+    void initPawnAttacks() {
+        for (int sq = 0; sq < 64; sq++) {
+            int r = sq / 8, c = sq % 8;
+            uint64_t white = 0, black = 0;
+            if (r < 7 && c > 0) white |= 1ULL << (sq + 7);
+            if (r < 7 && c < 7) white |= 1ULL << (sq + 9);
+            if (r > 0 && c > 0) black |= 1ULL << (sq - 9);
+            if (r > 0 && c < 7) black |= 1ULL << (sq - 7);
+            pawnAttackTable[WHITE][sq] = white;
+            pawnAttackTable[BLACK][sq] = black;
+        }
+    }
+
+    void initBishopMasks() {
+        for (int sq = 0; sq < 64; sq++) {
+            uint64_t mask = 0;
+            int r = sq / 8, c = sq % 8;
+            const int dirs[4][2] = {{1,1},{1,-1},{-1,1},{-1,-1}};
+            for (auto& d : dirs) {
+                int nr = r + d[0], nc = c + d[1];
+                while (nr > 0 && nr < 7 && nc > 0 && nc < 7) {
+                    mask |= 1ULL << (nr * 8 + nc);
+                    nr += d[0]; nc += d[1];
+                }
+            }
+            bishopMasks[sq] = mask;
+        }
+    }
+
+    void initRookMasks() {
+        for (int sq = 0; sq < 64; sq++) {
+            uint64_t mask = 0;
+            int r = sq / 8, c = sq % 8;
+            for (int nc = 1; nc < 7; nc++) if (nc != c) mask |= 1ULL << (r * 8 + nc);
+            for (int nr = 1; nr < 7; nr++) if (nr != r) mask |= 1ULL << (nr * 8 + c);
+            rookMasks[sq] = mask;
+        }
+    }
+
+    void initSliderTables() {
+        for (int sq = 0; sq < 64; sq++) {
+            // Bishop table
+            uint64_t mask = bishopMasks[sq];
+            int shift = 64 - BISHOP_BITS[sq];
+            uint64_t subset = 0;
+            do {
+                int index = static_cast<int>((subset * BISHOP_MAGICS[sq]) >> shift);
+                bishopLookup[sq][index] = bishopAttacksSlow(sq, subset);
+                subset = (subset - mask) & mask;
+            } while (subset);
+
+            // Rook table
+            mask = rookMasks[sq];
+            shift = 64 - ROOK_BITS[sq];
+            subset = 0;
+            do {
+                int index = static_cast<int>((subset * ROOK_MAGICS[sq]) >> shift);
+                rookLookup[sq][index] = rookAttacksSlow(sq, subset);
+                subset = (subset - mask) & mask;
+            } while (subset);
+        }
+    }
+
+    uint64_t getBishopAttacks(int sq, uint64_t occ) const {
+        uint64_t relevant = occ & bishopMasks[sq];
+        int index = static_cast<int>((relevant * BISHOP_MAGICS[sq]) >> (64 - BISHOP_BITS[sq]));
+        return bishopLookup[sq][index];
+    }
+
+    uint64_t getRookAttacks(int sq, uint64_t occ) const {
+        uint64_t relevant = occ & rookMasks[sq];
+        int index = static_cast<int>((relevant * ROOK_MAGICS[sq]) >> (64 - ROOK_BITS[sq]));
+        return rookLookup[sq][index];
+    }
+
+    uint64_t getQueenAttacks(int sq, uint64_t occ) const {
+        return getBishopAttacks(sq, occ) | getRookAttacks(sq, occ);
+    }
 };
