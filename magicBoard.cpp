@@ -2,10 +2,12 @@
 #include <vector>
 #include <cstdint>
 #include <format>
+#include <unordered_map>
 
 #include "move.h"
 #include "staticEvals.h"
 #include "magic_constants.h"
+#include "hash.cpp"
 
 using namespace std;
 
@@ -55,6 +57,11 @@ public:
     uint64_t occupied{};   // allWhite | allBlack
 
     MagicBoard() {
+        castlingHashKeys[0] = hashHelper.whiteShortCastle;
+        castlingHashKeys[1] = hashHelper.whiteLongCastle;
+        castlingHashKeys[2] = hashHelper.blackShortCastle;
+        castlingHashKeys[3] = hashHelper.blackLongCastle;
+
         setup();
         initPieceValues();
         initEvalMap();
@@ -93,14 +100,16 @@ public:
 
         // Snapshot irreversible state BEFORE any mutation
         UndoInfo info {
-         move,
+            move,
             enPassantCol,
             castlingRights,
-            0, // fix when adding hashing
+            boardHash,
             gonePiece,
             newSq  // default: captured piece is on destination
         };
 
+        // add turn hash
+        boardHash ^= hashHelper.getTurnHash();
         // reset en-passant hash
         maybeResetEnPassantHash();
 
@@ -115,21 +124,21 @@ public:
                 newPiece -= 32;
             }
 
-            // TODO remove hash of gone piece
-            // boardHash ^= hashHelper.getHash(board[newRow][newCol], newRow, newCol);
-
             // Remove captured piece
             if (gonePiece != ' ') {
+                boardHash ^= pieceHash(gonePiece, newSq);
                 getBitboard(gonePiece) &= ~sqToBB(newSq);
             }
 
             // delete old pawn
+            boardHash ^= pieceHash(movedPiece, currSq);
             getBitboard(movedPiece) &= ~sqToBB(currSq);
             board[currSq] = ' ';
 
             // add new piece
             getBitboard(newPiece) |= sqToBB(newSq);
             board[newSq] = newPiece;
+            boardHash ^= pieceHash(newPiece, newSq);
 
         } else if (isKing(board[currSq]) && abs(newSq - currSq) == 2) {
             // if King is moving two squares it is castling
@@ -138,47 +147,57 @@ public:
                 // kingside castle — move rook
                 int rookFrom = currSq + 3;
                 int rookTo   = currSq + 1;
-                getBitboard(board[rookFrom]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookTo] = board[rookFrom];
+                char rook = board[rookFrom];
+                boardHash ^= pieceHash(rook, rookFrom);
+                boardHash ^= pieceHash(rook, rookTo);
+                getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
+                board[rookTo] = rook;
                 board[rookFrom] = ' ';
             }
             else if (newSq == currSq - 2) {
                 // queenside castle — move rook
                 int rookFrom = currSq - 4;
                 int rookTo   = currSq - 1;
-                getBitboard(board[rookFrom]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookTo] = board[rookFrom];
+                char rook = board[rookFrom];
+                boardHash ^= pieceHash(rook, rookFrom);
+                boardHash ^= pieceHash(rook, rookTo);
+                getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
+                board[rookTo] = rook;
                 board[rookFrom] = ' ';
             }
+            boardHash ^= pieceHash(movedPiece, currSq);
+            boardHash ^= pieceHash(movedPiece, newSq);
             getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
             board[newSq] = movedPiece;
             board[currSq] = ' ';
         } else {
+            // handle double pawn moves
             if (isPawn(movedPiece) && abs(rowOf(newSq) - rowOf(currSq)) == 2) {
-                // handle double pawn moves
-                // boardHash ^= hashHelper.getEnPassantHash(currCol);
+                boardHash ^= hashHelper.getEnPassantHash(colOf(currSq));
                 enPassantCol = colOf(currSq);
             } else if (isPawn(movedPiece) && abs(colOf(currSq) - colOf(newSq)) == 1 && gonePiece == ' ') {
                 // handle en-passant
                 // if pawn captured (i.e. changed column) and there is no gonePiece => it's en-passant
-
-                // remove the captured pawn
-                // boardHash ^= hashHelper.getHash(board[currRow][newCol], currRow, newCol);
 
                 // capturedSq is one row behind toSq (from the moving side's perspective)
                 int capturedSq = newSq + (turn == WHITE ? -8 : 8);
                 info.capturedSq = capturedSq;
                 info.capturedPiece = board[capturedSq];
 
+                // remove the captured pawn
+                boardHash ^= pieceHash(board[capturedSq], capturedSq);
                 getBitboard(board[capturedSq]) &= ~sqToBB(capturedSq);
                 board[capturedSq] = ' ';
             }
 
             if (gonePiece != ' ') {
+                boardHash ^= pieceHash(gonePiece, newSq);
                 getBitboard(gonePiece) &= ~sqToBB(newSq);
             }
 
             // Actual piece movement
+            boardHash ^= pieceHash(movedPiece, currSq);
+            boardHash ^= pieceHash(movedPiece, newSq);
             getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
             board[newSq] = movedPiece;
             board[currSq] = ' ';
@@ -186,11 +205,16 @@ public:
 
         prevMoves.push_back(std::move(info));
 
+        int oldCastlingRights = castlingRights;
         castlingRights &= castlingMask[currSq] & castlingMask[newSq];
+        hashCastlingDelta(oldCastlingRights, castlingRights);
+
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
         flipTurn();
+
+        hashHistory[boardHash]++;
     }
 
     void undoMove() {
@@ -201,6 +225,11 @@ public:
 
         // Flip turn first (so 'turn' = the side that made the move)
         flipTurn();
+
+        hashHistory[boardHash]--;
+        if (hashHistory[boardHash] == 0) {
+            hashHistory.erase(boardHash);
+        }
 
         UndoInfo info = prevMoves.back();
         prevMoves.pop_back();
@@ -260,7 +289,7 @@ public:
         // Restore all irreversible state from the snapshot — no re-derivation needed
         enPassantCol = info.enPassantCol;
         castlingRights = info.castlingRights;
-        // boardHash = info.boardHash;  // when you add hashing
+        boardHash = info.boardHash;
 
         // Recompute aggregates
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
@@ -270,8 +299,9 @@ public:
 
     void processNullMove() {
         evalCalculated = false;
-        UndoInfo info {"null", enPassantCol, castlingRights, 0, ' ', -1};
+        UndoInfo info {"null", enPassantCol, castlingRights, boardHash, ' ', -1};
         prevMoves.push_back(std::move(info));
+        boardHash ^= hashHelper.getTurnHash();
         maybeResetEnPassantHash();
         flipTurn();
     }
@@ -281,6 +311,7 @@ public:
         const UndoInfo info = std::move(prevMoves.back());
         prevMoves.pop_back();
         enPassantCol = info.enPassantCol;
+        boardHash = info.boardHash;
         flipTurn();
     }
 
@@ -449,7 +480,8 @@ public:
     }
 
     bool isPositionRepeated() {
-        return false;
+        auto it = hashHistory.find(boardHash);
+        return it != hashHistory.end() && it->second > 1;
     }
 
     bool isKingPresent() {
@@ -469,7 +501,7 @@ public:
     }
 
     uint64_t getHash() const {
-        return 0;
+        return boardHash;
     }
 
     int getCastlingRights() {
@@ -564,6 +596,11 @@ private:
 
     int evalTable[256][2][64]{};
 
+    uint64_t boardHash = 0;
+    std::unordered_map<uint64_t, int> hashHistory;
+    Hash hashHelper;
+    uint64_t castlingHashKeys[4]{};
+
     static constexpr uint64_t darkSquareMask  = 0xAA55AA55AA55AA55ULL;
     static constexpr uint64_t lightSquareMask = 0x55AA55AA55AA55AAULL;
 
@@ -626,7 +663,18 @@ private:
         board[toSq(7,6)] = 'n';
         board[toSq(7,7)] = 'r';
 
-        // TODO add hash and history
+        boardHash = 0;
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
+            }
+        }
+        boardHash ^= hashHelper.whiteShortCastle;
+        boardHash ^= hashHelper.whiteLongCastle;
+        boardHash ^= hashHelper.blackShortCastle;
+        boardHash ^= hashHelper.blackLongCastle;
+
+        hashHistory[boardHash]++;
     }
 
     void initPieceValues() {
@@ -774,8 +822,21 @@ private:
 
     inline void maybeResetEnPassantHash() {
         if (enPassantCol != -1) {
-            // boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
+            boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
             enPassantCol = -1;
+        }
+    }
+
+    inline uint64_t pieceHash(char piece, int sq) {
+        return hashHelper.getHash(piece, rowOf(sq), colOf(sq));
+    }
+
+    inline void hashCastlingDelta(int oldRights, int newRights) {
+        int changed = oldRights ^ newRights;
+        for (int bit = 0; bit < 4; bit++) {
+            if (changed & (1 << bit)) {
+                boardHash ^= castlingHashKeys[bit];
+            }
         }
     }
 

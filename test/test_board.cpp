@@ -77,6 +77,19 @@ void verifyMatch(Board& ob, MagicBoard& mb, const string& context) {
         assert(false);
     }
 
+    // Verify hash (only when castling rights agree — Board has a known castling bug)
+    uint64_t obHash = ob.getHash();
+    uint64_t mbHash = mb.getHash();
+    if (obHash != mbHash) {
+        if (obCR == mbCR) {
+            cerr << "HASH MISMATCH: old=" << obHash << " new=" << mbHash
+                 << " | " << context << endl;
+            assert(false);
+        } else {
+            cerr << "HASH MISMATCH (expected, castling rights differ): " << context << endl;
+        }
+    }
+
     // Verify getBoardEval
     int obEval = ob.getBoardEval();
     int mbEval = mb.getBoardEval();
