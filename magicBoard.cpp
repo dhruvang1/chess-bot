@@ -60,6 +60,7 @@ public:
         initEvalMap();
         initGamePhaseTable();
         initCastlingMask();
+        initPassPawnMasks();
         initKnightAttacks();
         initKingAttacks();
         initPawnAttacks();
@@ -268,9 +269,19 @@ public:
     }
 
     void processNullMove() {
+        evalCalculated = false;
+        UndoInfo info {"null", enPassantCol, castlingRights, 0, ' ', -1};
+        prevMoves.push_back(std::move(info));
+        maybeResetEnPassantHash();
+        flipTurn();
     }
 
     void undoNullMove() {
+        evalCalculated = false;
+        const UndoInfo info = std::move(prevMoves.back());
+        prevMoves.pop_back();
+        enPassantCol = info.enPassantCol;
+        flipTurn();
     }
 
     void getCapturesPromo(vector<Move>& legalMoves) {
@@ -309,8 +320,124 @@ public:
         return isSquareAttackedByColor(toSq(row, col), color);
     }
 
+    // TODO, could use bitboards for calculation
     int getBoardEval() {
-        return 0;
+        if (evalCalculated) {
+            return eval;
+        }
+
+        eval = 0;
+        gamePhase = 0;
+        int mgEval = 0;
+        int egEval = 0;
+        int wpCounts[8]{};  // white pawns per file
+        int bpCounts[8]{};  // black pawns per file
+
+        // Material + piece-square table scores
+        for (int sq = 0; sq < 64; sq++) {
+            char c = board[sq];
+            if (c == ' ') continue;
+
+            mgEval += pieceValue[c] + evalTable[c][0][sq];
+            egEval += pieceValue[c] + evalTable[c][1][sq];
+            gamePhase += gamePhaseTable[c];
+            if (c == 'P') wpCounts[colOf(sq)]++;
+            else if (c == 'p') bpCounts[colOf(sq)]++;
+        }
+
+        if (gamePhase > 24) gamePhase = 24;
+
+        // Tapered eval: blend middlegame and endgame scores by game phase
+        eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
+
+        // Bishop pair: bonus scales from 5% to 30% of pawn value as pieces come off
+        double bishopPairBonus = (gamePhase * 0.05 + (24 - gamePhase) * 0.3) / 24;
+
+        if ((whiteBishops & lightSquareMask) && (whiteBishops & darkSquareMask)) {
+            eval += int(bishopPairBonus * pieceValue['P']);
+        }
+        if ((blackBishops & lightSquareMask) && (blackBishops & darkSquareMask)) {
+            eval += int(bishopPairBonus * pieceValue['p']);
+        }
+
+        // Pawn structure penalties scale up toward endgame
+        double doubledPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
+        double doubledIsolatedPawnsPenalty = (24 - gamePhase) * 0.2 / 24;
+        double isolatedPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
+        double passedPawnsBonus = (gamePhase * 0.2 + (24 - gamePhase) * 0.8) / 24;
+
+        for (int j = 0; j < 8; j++) {
+            if (wpCounts[j] >= 1) {
+                bool isolated = (j == 0 || wpCounts[j-1] == 0) && (j == 7 || wpCounts[j+1] == 0);
+                if (isolated) {
+                    eval -= int(pieceValue['P'] * wpCounts[j] * isolatedPawnsPenalty);
+                    eval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
+                } else {
+                    eval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledPawnsPenalty);
+                }
+
+                // Passed pawn: no enemy pawns ahead on same or adjacent files
+                if (gamePhase <= 18) {
+                    for (int r = 6; r > 3; r--) {
+                        if (whitePawns & sqToBB(toSq(r, j))) {
+                            if ((whitePassPawnMask[r][j] & blackPawns) == 0) {
+                                eval += int(pieceValue['P'] * passedPawnsBonus);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (bpCounts[j] >= 1) {
+                bool isolated = (j == 0 || bpCounts[j-1] == 0) && (j == 7 || bpCounts[j+1] == 0);
+                if (isolated) {
+                    eval -= int(pieceValue['p'] * bpCounts[j] * isolatedPawnsPenalty);
+                    eval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
+                } else {
+                    eval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledPawnsPenalty);
+                }
+
+                if (gamePhase <= 18) {
+                    for (int r = 1; r < 4; r++) {
+                        if (blackPawns & sqToBB(toSq(r, j))) {
+                            if ((blackPassPawnMask[r][j] & whitePawns) == 0) {
+                                eval += int(pieceValue['p'] * passedPawnsBonus);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // King safety: reward pawn shield in front of castled king
+        if (gamePhase >= 16) {
+            int wkSq = __builtin_ctzll(whiteKing);
+            int wkRow = rowOf(wkSq), wkCol = colOf(wkSq);
+            if (wkRow == 0 && wkCol == 6) {  // kingside castle position
+                eval += int((__builtin_popcountll(whitePawns & 0x0000000000E000ULL)) * 0.15 * pieceValue['P']); // f2,g2,h2
+                eval += int((__builtin_popcountll(whitePawns & 0x00000000E00000ULL)) * 0.1 * pieceValue['P']);  // f3,g3,h3
+            } else if (wkRow == 0 && wkCol == 1) {  // queenside castle position
+                eval += int((__builtin_popcountll(whitePawns & 0x0000000000000700ULL)) * 0.15 * pieceValue['P']); // a2,b2,c2
+                eval += int((__builtin_popcountll(whitePawns & 0x0000000000070000ULL)) * 0.1 * pieceValue['P']);  // a3,b3,c3
+            }
+
+            int bkSq = __builtin_ctzll(blackKing);
+            int bkRow = rowOf(bkSq), bkCol = colOf(bkSq);
+            if (bkRow == 7 && bkCol == 6) {
+                eval += int((__builtin_popcountll(blackPawns & 0x00E0000000000000ULL)) * 0.15 * pieceValue['p']); // f7,g7,h7
+                eval += int((__builtin_popcountll(blackPawns & 0x0000E00000000000ULL)) * 0.1 * pieceValue['p']);  // f6,g6,h6
+            } else if (bkRow == 7 && bkCol == 1) {
+                eval += int((__builtin_popcountll(blackPawns & 0x0007000000000000ULL)) * 0.15 * pieceValue['p']); // a7,b7,c7
+                eval += int((__builtin_popcountll(blackPawns & 0x0000070000000000ULL)) * 0.1 * pieceValue['p']);  // a6,b6,c6
+            }
+        }
+
+        evalCalculated = true;
+        if (turn == BLACK) eval = -eval;
+
+        return eval;
     }
 
     int getGamePhase() {
@@ -326,11 +453,19 @@ public:
     }
 
     bool isKingPresent() {
-        return true;
+        return whiteKing != 0 && blackKing != 0;
     }
 
     string printBoard() {
-        return "";
+        string ans;
+        for (int r = 7; r >= 0; r--) {
+            for (int c = 0; c < 8; c++) {
+                ans += board[toSq(r, c)];
+                ans += "  ";
+            }
+            ans += "\n";
+        }
+        return ans;
     }
 
     uint64_t getHash() const {
@@ -428,6 +563,12 @@ private:
     int eval = 0;
 
     int evalTable[256][2][64]{};
+
+    static constexpr uint64_t darkSquareMask  = 0xAA55AA55AA55AA55ULL;
+    static constexpr uint64_t lightSquareMask = 0x55AA55AA55AA55AAULL;
+
+    uint64_t whitePassPawnMask[8][8]{};
+    uint64_t blackPassPawnMask[8][8]{};
 
     void setup() {
         // Row 1: all 8 white pawns (bits 8-15)
@@ -561,6 +702,38 @@ private:
 
         gamePhaseTable['K'] = 0;
         gamePhaseTable['k'] = 0;
+    }
+
+    void initPassPawnMasks() {
+        uint64_t whiteAheadCol[8][8]{};
+        uint64_t blackAheadCol[8][8]{};
+
+        for (int r = 6; r >= 1; r--) {
+            for (int c = 0; c < 8; c++) {
+                whiteAheadCol[r][c] |= 1ULL << toSq(r + 1, c);
+                whiteAheadCol[r][c] |= whiteAheadCol[r + 1][c];
+            }
+        }
+        for (int r = 1; r < 7; r++) {
+            for (int c = 0; c < 8; c++) {
+                blackAheadCol[r][c] |= 1ULL << toSq(r - 1, c);
+                blackAheadCol[r][c] |= blackAheadCol[r - 1][c];
+            }
+        }
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                whitePassPawnMask[r][c] = whiteAheadCol[r][c];
+                blackPassPawnMask[r][c] = blackAheadCol[r][c];
+                if (c > 0) {
+                    whitePassPawnMask[r][c] |= whiteAheadCol[r][c - 1];
+                    blackPassPawnMask[r][c] |= blackAheadCol[r][c - 1];
+                }
+                if (c < 7) {
+                    whitePassPawnMask[r][c] |= whiteAheadCol[r][c + 1];
+                    blackPassPawnMask[r][c] |= blackAheadCol[r][c + 1];
+                }
+            }
+        }
     }
 
     void initCastlingMask() {

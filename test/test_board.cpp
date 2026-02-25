@@ -77,6 +77,16 @@ void verifyMatch(Board& ob, MagicBoard& mb, const string& context) {
         assert(false);
     }
 
+    // Verify getBoardEval
+    int obEval = ob.getBoardEval();
+    int mbEval = mb.getBoardEval();
+    if (abs(obEval - mbEval) > 1) {
+        cerr << "EVAL MISMATCH: old=" << obEval << " new=" << mbEval
+             << " diff=" << (obEval - mbEval)
+             << " | " << context << endl;
+        assert(false);
+    }
+
     // Verify getLegalMoves
     vector<Move> obMoves, mbMoves;
     ob.getLegalMoves(obMoves);
