@@ -465,6 +465,17 @@ public:
             }
         }
 
+        // Minor piece mobility: scales down toward endgame
+        int minorDiff = getMinorMobility(WHITE) - getMinorMobility(BLACK);
+        eval += (gamePhase * minorDiff + (24 - gamePhase) * minorDiff / 3) / 24;
+
+        // Rook mobility: scales UP toward endgame (rooks dominate open positions)
+        int rookDiff = getRookMobility(WHITE) - getRookMobility(BLACK);
+        eval += (gamePhase * rookDiff / 2 + (24 - gamePhase) * rookDiff) / 24;
+
+        // Queen mobility: flat weight
+        eval += getQueenMobility(WHITE) - getQueenMobility(BLACK);
+
         evalCalculated = true;
         if (turn == BLACK) eval = -eval;
 
@@ -608,6 +619,13 @@ private:
 
     static constexpr uint64_t darkSquareMask  = 0xAA55AA55AA55AA55ULL;
     static constexpr uint64_t lightSquareMask = 0x55AA55AA55AA55AAULL;
+    static constexpr uint64_t fileAMask = 0x0101010101010101ULL;
+    static constexpr uint64_t fileHMask = 0x8080808080808080ULL;
+
+    static constexpr int knightMobilityWeight = 4;
+    static constexpr int bishopMobilityWeight = 5;
+    static constexpr int rookMobilityWeight   = 3;
+    static constexpr int queenMobilityWeight  = 1;
 
     uint64_t whitePassPawnMask[8][8]{};
     uint64_t blackPassPawnMask[8][8]{};
@@ -1186,5 +1204,66 @@ private:
 
     uint64_t getQueenAttacks(int sq, uint64_t occ) const {
         return getBishopAttacks(sq, occ) | getRookAttacks(sq, occ);
+    }
+
+    // Compute pawn attack bitboard for one side from its pawn positions
+    static uint64_t computePawnAttacks(uint64_t pawns, Color color) {
+        if (color == WHITE) {
+            return ((pawns & ~fileAMask) << 7) | ((pawns & ~fileHMask) << 9);
+        } else {
+            return ((pawns & ~fileHMask) >> 7) | ((pawns & ~fileAMask) >> 9);
+        }
+    }
+
+    uint64_t getAttacks(int sq, char piece) const {
+        switch (piece) {
+            case 'N': case 'n': return knightAttackTable[sq];
+            case 'B': case 'b': return getBishopAttacks(sq, occupied);
+            case 'R': case 'r': return getRookAttacks(sq, occupied);
+            case 'Q': case 'q': return getQueenAttacks(sq, occupied);
+            default: return 0;
+        }
+    }
+
+    int countPieceMobility(uint64_t pieces, uint64_t friendly, uint64_t safeMask,
+                           int weight, char piece) const {
+        int score = 0;
+        while (pieces) {
+            int sq = __builtin_ctzll(pieces);
+            pieces &= pieces - 1;
+            score += __builtin_popcountll(getAttacks(sq, piece) & ~friendly & safeMask) * weight;
+        }
+        return score;
+    }
+
+    int getMinorMobility(Color color) const {
+        uint64_t friendly = (color == WHITE) ? allWhite : allBlack;
+        uint64_t enemyPawnAttacks = computePawnAttacks(
+            (color == WHITE) ? blackPawns : whitePawns, flipColor(color)
+        );
+        uint64_t safeMask = ~enemyPawnAttacks;
+        char knightChar = (color == WHITE) ? 'N' : 'n';
+        char bishopChar = (color == WHITE) ? 'B' : 'b';
+
+        return countPieceMobility((color == WHITE) ? whiteKnights : blackKnights,
+                                  friendly, safeMask, knightMobilityWeight, knightChar)
+             + countPieceMobility((color == WHITE) ? whiteBishops : blackBishops,
+                                  friendly, safeMask, bishopMobilityWeight, bishopChar);
+    }
+
+    int getRookMobility(Color color) const {
+        uint64_t friendly = (color == WHITE) ? allWhite : allBlack;
+        char rookChar = (color == WHITE) ? 'R' : 'r';
+
+        return countPieceMobility((color == WHITE) ? whiteRooks : blackRooks,
+                                  friendly, ~0ULL, rookMobilityWeight, rookChar);
+    }
+
+    int getQueenMobility(Color color) const {
+        uint64_t friendly = (color == WHITE) ? allWhite : allBlack;
+        char queenChar = (color == WHITE) ? 'Q' : 'q';
+
+        return countPieceMobility((color == WHITE) ? whiteQueens : blackQueens,
+                                  friendly, ~0ULL, queenMobilityWeight, queenChar);
     }
 };
