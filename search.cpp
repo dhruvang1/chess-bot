@@ -261,6 +261,15 @@ class Search {
             return {ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0, ""};
         }
 
+        // reverse futility pruning: position is so far above beta, skip searching
+        if (depth <= 3 && alpha == beta - 1 && !board->isKingInCheck()
+            && abs(beta) < BoardType::checkmateEval) {
+            int rfpMargin = depth * 150;
+            if (board->getBoardEval() - rfpMargin >= beta) {
+                return {beta, ""};
+            }
+        }
+
         vector<Move> legalMoves;
         legalMoves.reserve(50);
         // use last round's move as starting point in search
