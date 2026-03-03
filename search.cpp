@@ -36,7 +36,7 @@ class Search {
     int deltaPrune = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
-    int NULL_MOVE_REDUCTION = 2;
+    int BASE_NULL_MOVE_REDUCTION = 2;
     high_resolution_clock::time_point startTime;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
@@ -289,7 +289,7 @@ class Search {
         // do null move
         if (nullAllowed && board->getGamePhase() > 0 && depth > 2) {
             board->processNullMove();
-            Node result = negamax(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, ply + 1, false);
+            Node result = negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth / 7)), ply + 1, false);
             result.eval = -result.eval;
 
             // undo null move
