@@ -287,7 +287,7 @@ class Search {
         }
 
         // do null move
-        if (nullAllowed && board->getGamePhase() > 0 && depth > 4) {
+        if (nullAllowed && board->getGamePhase() > 0 && depth > 2) {
             board->processNullMove();
             Node result = negamax(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, ply + 1, false);
             result.eval = -result.eval;
