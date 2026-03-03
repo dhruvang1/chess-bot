@@ -183,6 +183,10 @@ class Search {
         }
     }
 
+    void setBoard(BoardType& b) {
+        this->board = &b;
+    }
+
     void logMembers() {
         cout << "orderedMovesLastRound: " << orderedMovesLastRound.size() << "  " << orderedMovesLastRound.capacity() << endl;
         cout << "TTable: " << ttable.size() << "  " << ttable.capacity() << endl;
@@ -264,7 +268,7 @@ class Search {
             legalMoves = orderedMovesLastRound;
         } else {
             board->getLegalMoves(legalMoves);
-            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], board->pieceValue);
+            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1]);
         }
 
         if (legalMoves.empty()) {
@@ -318,6 +322,7 @@ class Search {
                 result.eval = -result.eval;
             } else {
                 bool doPvs = true;
+                // TODO: also apply LMR to losing captures (see(m) < 0)
                 if (index >= 4 && isQuiet && depth > 3 && alpha == beta - 1) {
                     // LMR, reduce depth by 1
                     result = negamax(-alpha - 1, -alpha, depth - 2, ply + 1, true);
@@ -422,7 +427,7 @@ class Search {
         }
 
         string tempMove;
-        reorderMoves(legalMoves, tempMove, tempMove, tempMove, board->pieceValue);
+        reorderMoves(legalMoves, tempMove, tempMove, tempMove);
 
 //        string prefix;
 //        for(int i=0;i<minmaxDepth + (QSEARCH_MAX_DEPTH - depth);i++) {
@@ -433,9 +438,14 @@ class Search {
         int maxEval = alpha;
         int delta = 300;
         for(const auto& m: legalMoves) {
-            // delta pruning
+            // delta pruning: even winning this piece cleanly can't raise alpha
             if (m.isCapture && (boardEval + abs(board->pieceValue[m.capturePiece]) + delta < alpha)) {
                 deltaPrune++;
+                continue;
+            }
+
+            // SEE pruning: this capture loses material in the exchange
+            if (m.isCapture && board->see(m) < 0) {
                 continue;
             }
 
@@ -498,39 +508,25 @@ class Search {
         }
     }
 
-    static void reorderMoves(vector<Move> &legalMoves, string& ttMoves, string& killer1, string& killer2, const int pieceValue[256]) {
+    void reorderMoves(vector<Move> &legalMoves, string& ttMoves, string& killer1, string& killer2) {
         string ttMove = getFirstMove(ttMoves);
-        sort(legalMoves.begin(), legalMoves.end(),[&ttMove, &killer1, &killer2, pieceValue](const auto &left, const auto &right){
-            int l,r;
-            if (left.move == ttMove) {
-                l = 60000 * 20000;
-            } else if (left.isPromotion) {
-                l = 50000 * 20000;
-            } else if (left.isCapture) {
-                l = abs(40000 * pieceValue[left.capturePiece] + pieceValue[left.movePiece]);
-            } else if (left.move == killer1) {
-                l = 10000;
-            } else if (left.move == killer2) {
-                l = 9000;
-            } else {
-                l = 1000;
-            }
-
-            if (right.move == ttMove) {
-                r = 60000 * 20000;
-            } else if (right.isPromotion) {
-                r = 50000 * 20000;
-            } else if (right.isCapture) {
-                r = abs(40000 * pieceValue[right.capturePiece] + pieceValue[right.movePiece]);
-            } else if (right.move == killer1) {
-                r = 10000;
-            } else if (right.move == killer2) {
-                r = 9000;
-            } else {
-                r = 1000;
-            }
-
-            return r < l;
+        const int* pv = board->pieceValue;
+        sort(legalMoves.begin(), legalMoves.end(),[&, pv](const auto &left, const auto &right){
+            auto score = [&](const Move& m) -> int {
+                if (m.move == ttMove) return 60000 * 20000;
+                if (m.isPromotion) return 50000 * 20000;
+                if (m.isCapture) {
+                    // MVV-LVA within tier, SEE as binary gate between tiers
+                    int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
+                    if (board->see(m) >= 0) return 30000 * 20000 + mvvlva;
+                    // below quiet moves, but still ordered by MVV-LVA within bad captures
+                    return -(50000 * 20000) + mvvlva;
+                }
+                if (m.move == killer1) return 10000;
+                if (m.move == killer2) return 9000;
+                return 1000;
+            };
+            return score(right) < score(left);
         });
     }
 

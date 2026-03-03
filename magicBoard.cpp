@@ -482,6 +482,52 @@ public:
         return eval;
     }
 
+    int see(int toSq, int fromSq) const {
+        int gain[32];
+        int depth = 0;
+
+        char target = board[toSq];
+        char attacker = board[fromSq];
+
+        uint64_t occ = occupied;
+        uint64_t fromBB = sqToBB(fromSq);
+        occ ^= fromBB;
+
+        gain[depth] = abs(pieceValue[target]);
+
+        uint64_t attackers = getAttackersTo(toSq, occ) & occ;
+
+        Color sideToMove = isPieceOfColor(WHITE, attacker) ? BLACK : WHITE;
+        int attackerVal = abs(pieceValue[attacker]);
+
+        while (true) {
+            depth++;
+            gain[depth] = attackerVal - gain[depth - 1];
+
+            if (max(-gain[depth - 1], gain[depth]) < 0) break;
+
+            uint64_t attackerBB = getLeastValuableAttacker(attackers, sideToMove, attackerVal);
+            if (!attackerBB) break;
+
+            occ ^= attackerBB;
+            attackers = getAttackersTo(toSq, occ) & occ;
+
+            sideToMove = flipColor(sideToMove);
+        }
+
+        while (--depth) {
+            gain[depth - 1] = -max(-gain[depth - 1], gain[depth]);
+        }
+
+        return gain[0];
+    }
+
+    int see(const Move& m) const {
+        int fromSq = uciToSq(m.move[0], m.move[1]);
+        int toSq = uciToSq(m.move[2], m.move[3]);
+        return see(toSq, fromSq);
+    }
+
     int getGamePhase() {
         if (evalCalculated) {
             return gamePhase;
@@ -1265,5 +1311,42 @@ private:
 
         return countPieceMobility((color == WHITE) ? whiteQueens : blackQueens,
                                   friendly, ~0ULL, queenMobilityWeight, queenChar);
+    }
+
+    // --- Static Exchange Evaluation (SEE) ---
+
+    uint64_t getAttackersTo(int sq, uint64_t occ) const {
+        return (pawnAttackTable[BLACK][sq] & whitePawns)
+             | (pawnAttackTable[WHITE][sq] & blackPawns)
+             | (knightAttackTable[sq] & (whiteKnights | blackKnights))
+             | (getBishopAttacks(sq, occ) & (whiteBishops | blackBishops | whiteQueens | blackQueens))
+             | (getRookAttacks(sq, occ) & (whiteRooks | blackRooks | whiteQueens | blackQueens))
+             | (kingAttackTable[sq] & (whiteKing | blackKing));
+    }
+
+    // Returns the bitboard of the single least valuable attacker for the given color,
+    // and sets pieceVal to its absolute piece value.
+    uint64_t getLeastValuableAttacker(uint64_t attackers, Color color, int& pieceVal) const {
+        uint64_t subset;
+
+        subset = attackers & (color == WHITE ? whitePawns : blackPawns);
+        if (subset) { pieceVal = pieceValue['P']; return subset & -subset; }
+
+        subset = attackers & (color == WHITE ? whiteKnights : blackKnights);
+        if (subset) { pieceVal = pieceValue['N']; return subset & -subset; }
+
+        subset = attackers & (color == WHITE ? whiteBishops : blackBishops);
+        if (subset) { pieceVal = pieceValue['B']; return subset & -subset; }
+
+        subset = attackers & (color == WHITE ? whiteRooks : blackRooks);
+        if (subset) { pieceVal = pieceValue['R']; return subset & -subset; }
+
+        subset = attackers & (color == WHITE ? whiteQueens : blackQueens);
+        if (subset) { pieceVal = pieceValue['Q']; return subset & -subset; }
+
+        subset = attackers & (color == WHITE ? whiteKing : blackKing);
+        if (subset) { pieceVal = pieceValue['K']; return subset & -subset; }
+
+        return 0;
     }
 };
