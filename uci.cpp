@@ -85,37 +85,42 @@ class Uci {
             }
 
         } else if (tokens[0] == "go") {
-            int whiteTime = 60 * 1000;
-            int blackTime = 60 * 1000;
-
-            int whiteInc = 0;
-            int blackInc = 0;
-
-            if (tokens.size() > 2 && tokens[1] == "wtime") {
-                whiteTime = stoi(tokens[2]);
-            }
-            if (tokens.size() > 4 && tokens[3] == "btime") {
-                blackTime = stoi(tokens[4]);
-            }
-            if (tokens.size() > 6 && tokens[5] == "winc") {
-                whiteInc = stoi(tokens[6]);
-            }
-            if (tokens.size() > 8 && tokens[7] == "binc") {
-                blackInc = stoi(tokens[8]);
-            }
-
             string bestMove;
-            if (!board.hasMoves()) {
-                bestMove = openingsWhite[rand() % openingsWhite.size()];
-            } else if (board.moveCount() == 1) {
-                string firstMove = board.getMoveStr(0);
-                if (openingsBlack.find(firstMove) != openingsBlack.end()) {
-                    bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
+
+            if (tokens.size() > 2 && tokens[1] == "depth") {
+                int maxDepth = stoi(tokens[2]);
+                bestMove = search.getBestMove(board, maxDepth);
+            } else {
+                int whiteTime = 60 * 1000;
+                int blackTime = 60 * 1000;
+                int whiteInc = 0;
+                int blackInc = 0;
+
+                if (tokens.size() > 2 && tokens[1] == "wtime") {
+                    whiteTime = stoi(tokens[2]);
+                }
+                if (tokens.size() > 4 && tokens[3] == "btime") {
+                    blackTime = stoi(tokens[4]);
+                }
+                if (tokens.size() > 6 && tokens[5] == "winc") {
+                    whiteInc = stoi(tokens[6]);
+                }
+                if (tokens.size() > 8 && tokens[7] == "binc") {
+                    blackInc = stoi(tokens[8]);
+                }
+
+                if (!board.hasMoves()) {
+                    bestMove = openingsWhite[rand() % openingsWhite.size()];
+                } else if (board.moveCount() == 1) {
+                    string firstMove = board.getMoveStr(0);
+                    if (openingsBlack.find(firstMove) != openingsBlack.end()) {
+                        bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
+                    } else {
+                        bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
+                    }
                 } else {
                     bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
                 }
-            } else {
-                bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
             }
 
             board.processMove(bestMove);

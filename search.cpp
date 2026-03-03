@@ -43,6 +43,7 @@ class Search {
     int START_DEPTH = 1;
     int NULL_MOVE_REDUCTION = 2;
     high_resolution_clock::time_point startTime;
+    long softTimeLimitMs{};
     long hardTimeLimitMs{};
     int handicapTimeLeftMs = INT_MAX;
     vector<Move> orderedMovesLastRound;
@@ -76,22 +77,7 @@ class Search {
         return elapsedTime >= hardTimeLimitMs;
     }
 
-    public:
-
-    Search() {
-//        ofile.open("log.txt");
-        ttable.reserve(TTSize);
-        for(int i=0;i<TTSize;i++) {
-            ttable.emplace_back();
-        }
-    }
-
-    void logMembers() {
-        cout << "orderedMovesLastRound: " << orderedMovesLastRound.size() << "  " << orderedMovesLastRound.capacity() << endl;
-        cout << "TTable: " << ttable.size() << "  " << ttable.capacity() << endl;
-    }
-
-    string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
+    void initSearch(BoardType& currentBoard) {
         this->board = &currentBoard;
         nodes = 0;
         qNodes = 0;
@@ -107,12 +93,15 @@ class Search {
         deltaPrune = 0;
         orderedMovesLastRound.clear();
         initKillers();
+        startTime = high_resolution_clock::now();
+    }
 
-        int actualTimeLeft = (board->turn == BoardType::WHITE) ? whiteTimeMs : blackTimeMs;
+    void computeTimeLimits(int whiteTimeMs, int blackTimeMs) {
+        const int actualTimeLeft = (board->turn == BoardType::WHITE) ? whiteTimeMs : blackTimeMs;
         int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
         // assume 60 moves for the game
-        long softTimeLimitMs = myTimeLeft / 60;
+        softTimeLimitMs = myTimeLeft / 60;
         if (board->moveCount() < 16) {
             // keep lower time limit in 16 plies of opening
             softTimeLimitMs = myTimeLeft / 100;
@@ -127,22 +116,35 @@ class Search {
         if (myTimeLeft < 10 * 1000) {
             // you can use 1x soft time limit
             hardTimeLimitMs = softTimeLimitMs;
-        }
-        else if (myTimeLeft < 15 * 1000) {
+        } else if (myTimeLeft < 15 * 1000) {
             // you can use 2x soft time limit
             hardTimeLimitMs = 2 * softTimeLimitMs;
         } else {
-            // you can use min of (3x as much softLimit, or remaining time leaving 15s)
+            // you can use min of (3x as much softLimit, or remaining time leaving 10s)
             hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
         }
+    }
 
-        startTime = high_resolution_clock::now();
-        int bestMoveEval;
+    void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
+        auto stopTime = chrono::high_resolution_clock::now();
+        auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
+
+        cout << "info depth " << depthEvaluated << " nodes " << nodes << " time " << duration.count() << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
+        cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
+        cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
+        cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
+        cout << "info delta " << deltaPrune << endl;
+        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
+             << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
+    }
+
+    string runSearch(int maxDepth) {
+        int bestMoveEval = 0;
         string bestMove;
         string bestMoveLine;
         int depthEvaluated = 0;
 
-        for(int depth = START_DEPTH; depth < 30 ; depth++) {
+        for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
             // if timer > softThreshold => quit loop
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
@@ -172,20 +174,43 @@ class Search {
             }
         }
 
+        logSearchResult(depthEvaluated, bestMoveEval, bestMoveLine);
+        return bestMove;
+    }
+
+    public:
+
+    Search() {
+//        ofile.open("log.txt");
+        ttable.reserve(TTSize);
+        for(int i=0;i<TTSize;i++) {
+            ttable.emplace_back();
+        }
+    }
+
+    void logMembers() {
+        cout << "orderedMovesLastRound: " << orderedMovesLastRound.size() << "  " << orderedMovesLastRound.capacity() << endl;
+        cout << "TTable: " << ttable.size() << "  " << ttable.capacity() << endl;
+    }
+
+    string getBestMove(BoardType& currentBoard, int maxDepth) {
+        initSearch(currentBoard);
+        softTimeLimitMs = LONG_MAX;
+        hardTimeLimitMs = LONG_MAX;
+        return runSearch(maxDepth);
+    }
+
+    string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
+        initSearch(currentBoard);
+        computeTimeLimits(whiteTimeMs, blackTimeMs);
+
+        string bestMove = runSearch(29);
+
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
-
         int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         handicapTimeLeftMs = handicapTimeLeftMs - (int)duration.count() + myInc;
         if (handicapTimeLeftMs < 0) handicapTimeLeftMs = 0;
-
-        cout << "info depth " << depthEvaluated << " nodes " << nodes << " time " << duration.count() << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
-        cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
-        cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
-        cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
-        cout << "info delta " << deltaPrune << endl;
-        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
-             << " " << (100*(cacheHit - cacheFutileHit))/cacheHit << endl;
 
         return bestMove;
     }
