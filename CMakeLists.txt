@@ -5,15 +5,6 @@ set(CMAKE_OSX_ARCHITECTURES "arm64")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-add_executable(chess_old main.cpp uci.cpp
-        board.cpp
-        search.cpp
-        staticEvals.cpp
-        hash.cpp
-        transposition.cpp
-        staticEvals.h
-)
-
 add_executable(chess_magic main.cpp uci.cpp
         magicBoard.cpp
         search.cpp
@@ -22,6 +13,5 @@ add_executable(chess_magic main.cpp uci.cpp
         transposition.cpp
         staticEvals.h
 )
-target_compile_definitions(chess_magic PRIVATE USE_MAGIC_BOARD)
 
 add_executable(test_board test/test_board.cpp staticEvals.cpp)

@@ -5,13 +5,8 @@
 #include <sstream>
 #include <fstream>
 
-#ifdef USE_MAGIC_BOARD
 #include "magicBoard.cpp"
 using BoardType = MagicBoard;
-#else
-#include "board.cpp"
-using BoardType = Board;
-#endif
 
 #include "transposition.cpp"
 
