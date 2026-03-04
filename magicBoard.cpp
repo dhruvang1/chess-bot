@@ -390,7 +390,18 @@ public:
         double doubledPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
         double doubledIsolatedPawnsPenalty = (24 - gamePhase) * 0.2 / 24;
         double isolatedPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
-        double passedPawnsBonus = (gamePhase * 0.2 + (24 - gamePhase) * 0.8) / 24;
+        // Passed pawn bonus scales by rank: further advanced = exponentially more valuable
+        // Index by rank for white (rank 2=row1 through rank 7=row6)
+        static const int passedPawnByRank[] = {0, 5, 10, 20, 40, 80, 120, 0};
+        double passedPawnPhase = (gamePhase * 0.3 + (24 - gamePhase) * 1.0) / 24;
+
+        // king squares for passed pawn proximity (king escort / interception)
+        int wkSq = __builtin_ctzll(whiteKing);
+        int bkSq = __builtin_ctzll(blackKing);
+        int wkR = rowOf(wkSq), wkC = colOf(wkSq);
+        int bkR = rowOf(bkSq), bkC = colOf(bkSq);
+        // proximity weight scales from 0 (opening) to 5cp per distance unit (endgame)
+        int proxWeight = 5 * (24 - gamePhase) / 24;
 
         for (int j = 0; j < 8; j++) {
             if (wpCounts[j] >= 1) {
@@ -403,14 +414,16 @@ public:
                 }
 
                 // Passed pawn: no enemy pawns ahead on same or adjacent files
-                if (gamePhase <= 18) {
-                    for (int r = 6; r > 3; r--) {
-                        if (whitePawns & sqToBB(toSq(r, j))) {
-                            if ((whitePassPawnMask[r][j] & blackPawns) == 0) {
-                                eval += int(pieceValue['P'] * passedPawnsBonus);
-                            }
-                            break;
+                for (int r = 6; r >= 1; r--) {
+                    if (whitePawns & sqToBB(toSq(r, j))) {
+                        if ((whitePassPawnMask[r][j] & blackPawns) == 0) {
+                            eval += int(passedPawnByRank[r] * passedPawnPhase);
+                            // king-pawn proximity: reward our king near, enemy king far
+                            int friendDist = max(abs(wkR - r), abs(wkC - j));
+                            int enemyDist  = max(abs(bkR - r), abs(bkC - j));
+                            eval += proxWeight * (enemyDist - friendDist);
                         }
+                        break;
                     }
                 }
             }
@@ -424,14 +437,17 @@ public:
                     eval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledPawnsPenalty);
                 }
 
-                if (gamePhase <= 18) {
-                    for (int r = 1; r < 4; r++) {
-                        if (blackPawns & sqToBB(toSq(r, j))) {
-                            if ((blackPassPawnMask[r][j] & whitePawns) == 0) {
-                                eval += int(pieceValue['p'] * passedPawnsBonus);
-                            }
-                            break;
+                // For black, row 1 = rank 2 (most advanced), so bonus = passedPawnByRank[7-r]
+                for (int r = 1; r <= 6; r++) {
+                    if (blackPawns & sqToBB(toSq(r, j))) {
+                        if ((blackPassPawnMask[r][j] & whitePawns) == 0) {
+                            eval -= int(passedPawnByRank[7 - r] * passedPawnPhase);
+                            // king-pawn proximity: reward black's king near, white's king far
+                            int friendDist = max(abs(bkR - r), abs(bkC - j));
+                            int enemyDist  = max(abs(wkR - r), abs(wkC - j));
+                            eval -= proxWeight * (enemyDist - friendDist);
                         }
+                        break;
                     }
                 }
             }
