@@ -149,18 +149,18 @@ class Uci {
             if (tokens.size() > 1 && tokens[1] == "capture") {
                 capturesOnly = true;
             }
-            vector<Move> legalMoveList;
+            MoveList legalMoveList;
             board.getLegalMoves(legalMoveList);
             for(auto& m : legalMoveList) {
-                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", m.move, m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
+                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
 
             cout << "----ordered moves----" << endl;
-            string empty;
+            uint16_t noMove = MOVE_NONE;
             search.setBoard(board);
-            search.reorderMoves(legalMoveList, empty, empty, empty);
+            search.reorderMoves(legalMoveList, noMove, noMove, noMove);
             for(auto& m : legalMoveList) {
-                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", m.move, m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
+                cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
 
             cout << endl;

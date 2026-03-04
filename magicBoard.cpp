@@ -19,7 +19,7 @@ public:
     };
 
     struct UndoInfo {
-        string move;
+        uint16_t move;
         int enPassantCol;
         int castlingRights;
         uint64_t boardHash;
@@ -79,21 +79,20 @@ public:
     void logMembers() {
     }
 
-    void processMove(const string& move) {
-        if (move.length() != 4 && move.length() != 5) {
-            throw std::invalid_argument( "received move with length not 4/5, move: " + move);
-        }
+    void processMove(const string& uciStr) {
+        processMove(uciToMove(uciStr));
+    }
 
-        // assume the values are valid
-        int currSq = uciToSq(move[0], move[1]);
-        int newSq = uciToSq(move[2], move[3]);
+    void processMove(uint16_t move) {
+        int currSq = ::fromSq(move);
+        int newSq = ::toSq(move);
 
         char movedPiece = board[currSq];
         char gonePiece = board[newSq];
 
         if (!isPieceOfColor(turn, movedPiece)) {
             const string turn_value = turn == WHITE ? "WHITE" : "BLACK";
-            throw std::invalid_argument("Moving a piece of wrong color (or empty piece), move: " + move + " movedPiece: " + movedPiece + " turn: " + turn_value);
+            throw std::invalid_argument("Moving a piece of wrong color (or empty piece), move: " + moveToUci(move) + " movedPiece: " + movedPiece + " turn: " + turn_value);
         }
 
         evalCalculated = false;
@@ -114,11 +113,8 @@ public:
         maybeResetEnPassantHash();
 
         // handle promotion
-        if (move.length() == 5) {
-            char newPiece = move[4];
-            if (newPiece != 'r' && newPiece != 'q' && newPiece != 'b' && newPiece != 'n') {
-                throw std::invalid_argument("Promoted piece is unknown - Move: " + move + " piece: " + newPiece);
-            }
+        if (isPromoMove(move)) {
+            char newPiece = promoChar(move);
 
             if (turn == WHITE) {
                 newPiece -= 32;
@@ -233,41 +229,40 @@ public:
 
         UndoInfo info = prevMoves.back();
         prevMoves.pop_back();
-        const string lastMove = info.move;
 
-        const int fromSq = uciToSq(lastMove[0], lastMove[1]);
-        const int toSq = uciToSq(lastMove[2], lastMove[3]);
+        const int from = ::fromSq(info.move);
+        const int to = ::toSq(info.move);
 
-        if (lastMove.length() == 5) {
+        if (isPromoMove(info.move)) {
             // Promotion: remove promoted piece, restore pawn
-            char promotedPiece = board[toSq];
-            getBitboard(promotedPiece) &= ~sqToBB(toSq);
+            char promotedPiece = board[to];
+            getBitboard(promotedPiece) &= ~sqToBB(to);
 
             char pawn = (turn == WHITE) ? 'P' : 'p';
-            getBitboard(pawn) |= sqToBB(fromSq);
-            board[fromSq] = pawn;
-            board[toSq] = info.capturedPiece;
+            getBitboard(pawn) |= sqToBB(from);
+            board[from] = pawn;
+            board[to] = info.capturedPiece;
 
             if (info.capturedPiece != ' ') {
-                getBitboard(info.capturedPiece) |= sqToBB(toSq);
+                getBitboard(info.capturedPiece) |= sqToBB(to);
             }
         }
-        else if (isKing(board[toSq]) && abs(fromSq - toSq) == 2) {
+        else if (isKing(board[to]) && abs(from - to) == 2) {
             // Castling: reverse king move
-            getBitboard(board[toSq]) ^= sqToBB(fromSq) | sqToBB(toSq);
-            board[fromSq] = board[toSq];
-            board[toSq] = ' ';
+            getBitboard(board[to]) ^= sqToBB(from) | sqToBB(to);
+            board[from] = board[to];
+            board[to] = ' ';
 
             // Reverse rook move
-            if (toSq == fromSq + 2) {
-                const int rookFrom = fromSq + 3;
-                const int rookTo = fromSq + 1;
+            if (to == from + 2) {
+                const int rookFrom = from + 3;
+                const int rookTo = from + 1;
                 getBitboard(board[rookTo]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
                 board[rookFrom] = board[rookTo];
                 board[rookTo] = ' ';
             } else {
-                const int rookFrom = fromSq - 4;
-                const int rookTo = fromSq - 1;
+                const int rookFrom = from - 4;
+                const int rookTo = from - 1;
                 getBitboard(board[rookTo]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
                 board[rookFrom] = board[rookTo];
                 board[rookTo] = ' ';
@@ -275,9 +270,9 @@ public:
         }
         else {
             // Reverse piece movement
-            getBitboard(board[toSq]) ^= sqToBB(fromSq) | sqToBB(toSq);
-            board[fromSq] = board[toSq];
-            board[toSq] = ' ';
+            getBitboard(board[to]) ^= sqToBB(from) | sqToBB(to);
+            board[from] = board[to];
+            board[to] = ' ';
 
             // Restore captured piece at its actual square, handles en-passant as well
             if (info.capturedPiece != ' ') {
@@ -299,7 +294,7 @@ public:
 
     void processNullMove() {
         evalCalculated = false;
-        UndoInfo info {"null", enPassantCol, castlingRights, boardHash, ' ', -1};
+        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1};
         prevMoves.push_back(std::move(info));
         boardHash ^= hashHelper.getTurnHash();
         maybeResetEnPassantHash();
@@ -315,11 +310,11 @@ public:
         flipTurn();
     }
 
-    void getCapturesPromo(vector<Move>& legalMoves) {
+    void getCapturesPromo(MoveList& legalMoves) {
         generateMoves(legalMoves, true);
     }
 
-    void getLegalMoves(vector<Move>& legalMoves) {
+    void getLegalMoves(MoveList& legalMoves) {
         generateMoves(legalMoves, false);
     }
 
@@ -523,9 +518,7 @@ public:
     }
 
     int see(const Move& m) const {
-        int fromSq = uciToSq(m.move[0], m.move[1]);
-        int toSq = uciToSq(m.move[2], m.move[3]);
-        return see(toSq, fromSq);
+        return see(::toSq(m.move), ::fromSq(m.move));
     }
 
     int getGamePhase() {
@@ -563,8 +556,11 @@ public:
 
     size_t moveCount() const { return prevMoves.size(); }
     bool hasMoves() const { return !prevMoves.empty(); }
-    string getMoveStr(size_t i) const { return prevMoves[i].move; }
-    string getLastMoveStr() const { return prevMoves.back().move; }
+    string getMoveStr(size_t i) const { return moveToUci(prevMoves[i].move); }
+    string getLastMoveStr() const {
+        uint16_t m = prevMoves.back().move;
+        return m == MOVE_NONE ? "null" : moveToUci(m);
+    }
 
     int getCastlingRights() {
         return castlingRights;
@@ -945,29 +941,22 @@ private:
         return color == WHITE ? BLACK : WHITE;
     }
 
-    static inline string encodeSq(int from, int to) {
-        string s;
-        s += 'a' + colOf(from);
-        s += '1' + rowOf(from);
-        s += 'a' + colOf(to);
-        s += '1' + rowOf(to);
-        return s;
+    static inline uint16_t encodeSq(int from, int to) {
+        return encodeMove(from, to);
     }
 
-    static inline string encodePromoSq(int from, int to, char piece) {
-        string s = encodeSq(from, to);
-        s += piece;
-        return s;
+    static inline uint16_t encodePromoSq(int from, int to, char piece) {
+        return encodePromo(from, to, piece);
     }
 
-    void addPromoMoves(vector<Move>& moves, int from, int to, char pawnChar) {
+    void addPromoMoves(MoveList& moves, int from, int to, char pawnChar) {
         moves.emplace_back(encodePromoSq(from, to, 'q'), pawnChar, false, true);
         moves.emplace_back(encodePromoSq(from, to, 'r'), pawnChar, false, true);
         moves.emplace_back(encodePromoSq(from, to, 'n'), pawnChar, false, true);
         moves.emplace_back(encodePromoSq(from, to, 'b'), pawnChar, false, true);
     }
 
-    void addPromoCaptMoves(vector<Move>& moves, int from, int to, char pawnChar) {
+    void addPromoCaptMoves(MoveList& moves, int from, int to, char pawnChar) {
         moves.emplace_back(encodePromoSq(from, to, 'q'), pawnChar, false, true);
         moves.emplace_back(encodePromoSq(from, to, 'r'), pawnChar, false, true);
         moves.emplace_back(encodePromoSq(from, to, 'n'), pawnChar, false, true);
@@ -996,7 +985,7 @@ private:
             && !isSquareAttackedByColor(kingSq - 2, enemy);
     }
 
-    void addPieceMoves(vector<Move>& legalMoves, uint64_t attacks, int fromSq, char piece, bool capturesOnly) {
+    void addPieceMoves(MoveList& legalMoves, uint64_t attacks, int fromSq, char piece, bool capturesOnly) {
         uint64_t friendly = (turn == WHITE) ? allWhite : allBlack;
         uint64_t moves = attacks & ~friendly;
         while (moves) {
@@ -1009,7 +998,7 @@ private:
         }
     }
 
-    void generateMoves(vector<Move>& legalMoves, bool capturesOnly) {
+    void generateMoves(MoveList& legalMoves, bool capturesOnly) {
         uint64_t enemy = (turn == WHITE) ? allBlack : allWhite;
         Color enemyColor = flipColor(turn);
 

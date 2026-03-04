@@ -101,19 +101,17 @@ void verifyMatch(Board& ob, MagicBoard& mb, const string& context) {
     }
 
     // Verify getLegalMoves
-    vector<Move> obMoves, mbMoves;
+    vector<Move> obMoves;
+    MoveList mbMoves;
     ob.getLegalMoves(obMoves);
     mb.getLegalMoves(mbMoves);
 
-    // Sort by move string for comparison (order may differ)
-    auto cmp = [](const Move& a, const Move& b) { return a.move < b.move; };
-    sort(obMoves.begin(), obMoves.end(), cmp);
-    sort(mbMoves.begin(), mbMoves.end(), cmp);
-
     // Deduplicate and compare (Board has a bug where it duplicates castling moves)
     vector<string> obStrs, mbStrs;
-    for (auto& m : obMoves) obStrs.push_back(m.move);
-    for (auto& m : mbMoves) mbStrs.push_back(m.move);
+    for (auto& m : obMoves) obStrs.push_back(moveToUci(m.move));
+    for (auto& m : mbMoves) mbStrs.push_back(moveToUci(m.move));
+    sort(obStrs.begin(), obStrs.end());
+    sort(mbStrs.begin(), mbStrs.end());
     obStrs.erase(unique(obStrs.begin(), obStrs.end()), obStrs.end());
     mbStrs.erase(unique(mbStrs.begin(), mbStrs.end()), mbStrs.end());
 
