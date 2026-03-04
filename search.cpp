@@ -55,6 +55,7 @@ class Search {
     int lmrFailure = 0;
     int cacheHit= 0;
     int cacheFutileHit= 0;
+    int cachePvHit= 0;
     int cacheSave= 0;
     int cacheSaveSuccess= 0;
     int deltaPrune = 0;
@@ -114,6 +115,7 @@ class Search {
         lmrFailure = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
+        cachePvHit = 0;
         cacheSave = 0;
         cacheSaveSuccess = 0;
         deltaPrune = 0;
@@ -160,8 +162,8 @@ class Search {
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
         cout << "info delta " << deltaPrune << endl;
-        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
-             << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
+        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit - cachePvHit
+             << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit - cachePvHit))/cacheHit : 0) << " pvHit " << cachePvHit << endl;
     }
 
     string runSearch(int maxDepth) {
@@ -248,7 +250,11 @@ class Search {
 
         if (nullAllowed && board->isPositionRepeated()) {
             // give three-fold repetition the eval 0, so we go for it in worse positions and avoid it in good positions.
-            return Node(0);
+            return {0};
+        }
+
+        if (!board->isKingPresent()) {
+            return {-(BoardType::checkmateEval + depth)};
         }
 
         // Check transposition table for cached result
@@ -264,19 +270,19 @@ class Search {
                         n.pvLen = ttEntry->pvLen;
                         return n;
                     } else if (ttEntry->flag == TTFlagBeta && ttEntry->eval >= beta) {
-                        return Node(beta);
+                        return {beta};
                     } else if (ttEntry->flag == TTFlagAlpha && ttEntry->eval <= alpha) {
-                        return Node(alpha);
+                        return {alpha};
                     }
                 }
                 ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
                 cacheFutileHit++;
             } else if (ttEntry->flag == TTFlagExact && ttEntry->depth >= depth && alpha < ttEntry->eval && ttEntry->eval < beta){
                 cacheHit++;
+                cachePvHit++;
                 ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
+                // TODO: We can just return directly here
             }
-        } else if (!board -> isKingPresent()){
-            return Node(-(BoardType::checkmateEval + depth));
         } else if (depth > 3){
             // internal iterative deepening
             depth -= 1;
@@ -290,10 +296,14 @@ class Search {
 
         if (shouldQuit()) {
             // only evaluate if we are just starting
-            return Node(ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0);
+            return {ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0};
         }
 
         bool inCheck = board->isKingInCheck();
+
+        // check extension: being in check is tactically critical, search deeper
+        // depth >= 2 avoids cascading explosion at the qsearch boundary
+        if (inCheck && depth >= 2 && ply < 40) depth++;
 
         // reverse futility pruning: position is so far above beta, skip searching
         if (depth <= 3 && alpha == beta - 1 && !inCheck
