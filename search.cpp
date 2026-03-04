@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <cmath>
 
 #include "magicBoard.cpp"
 using BoardType = MagicBoard;
@@ -12,6 +13,23 @@ using BoardType = MagicBoard;
 
 using namespace std;
 using namespace std::chrono;
+
+// Late Move Reduction table: lmrTable[depth][moveIndex] gives the reduction amount.
+// Late quiet moves at high depth get reduced more aggressively (up to 3-4 plies).
+// Uses logarithmic formula so reductions scale naturally with both depth and move index.
+static int lmrTable[64][64];
+static bool lmrInitialized = false;
+
+static void initLMR() {
+    if (lmrInitialized) return;
+    lmrTable[0][0] = 0;
+    for (int d = 1; d < 64; d++) {
+        for (int m = 1; m < 64; m++) {
+            lmrTable[d][m] = 0.75 + log(d) * log(m) / 2.25;
+        }
+    }
+    lmrInitialized = true;
+}
 
 class Search {
     static const int POSITIVE_NUM = 1 << 30;
@@ -22,6 +40,11 @@ class Search {
     vector<TTEntry> ttable;
     vector<TTEntry> qttable;
     uint16_t killers[100] = {};
+    // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
+    // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
+    // since the truly bad moves end up at high indices where they get aggressively reduced.
+    // Indexed by ASCII char value (e.g. 'N'=78, 'p'=112) so 128 covers all pieces.
+    int history[128][64] = {};
 
     int nodes = 0;
     int qNodes = 0;
@@ -182,6 +205,7 @@ class Search {
 
     Search() {
 //        ofile.open("log.txt");
+        initLMR();
         ttable.reserve(TTSize);
         for(int i=0;i<TTSize;i++) {
             ttable.emplace_back();
@@ -269,8 +293,10 @@ class Search {
             return Node(ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0);
         }
 
+        bool inCheck = board->isKingInCheck();
+
         // reverse futility pruning: position is so far above beta, skip searching
-        if (depth <= 3 && alpha == beta - 1 && !board->isKingInCheck()
+        if (depth <= 3 && alpha == beta - 1 && !inCheck
             && abs(beta) < BoardType::checkmateEval) {
             int rfpMargin = depth * 150;
             if (board->getBoardEval() - rfpMargin >= beta) {
@@ -291,7 +317,7 @@ class Search {
             // it might look like we are checking twice for checkmate, once above and once now.
             // The above checks if there was an illegal move (not handling check) and the king is captured.
             // The below checks the line when we reach down a valid path and there are no legal moves.
-            if (board->isKingInCheck()) {
+            if (inCheck) {
                 // this is checkmate
                 return Node(-(BoardType::checkmateEval + depth));
             } else {
@@ -340,15 +366,19 @@ class Search {
             } else {
                 bool doPvs = true;
                 // TODO: also apply LMR to losing captures (see(m) < 0)
-                if (index >= 4 && isQuiet && depth > 3 && alpha == beta - 1) {
-                    // LMR, reduce depth by 1
-                    result = negamax(-alpha - 1, -alpha, depth - 2, ply + 1, true);
+                // inCheck refers to pre-move position: don't reduce when responding to check
+                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1]) {
+                    int R = lmrTable[min(depth, 63)][min(index, 63)];
+                    if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
+                    R = max(R, 1);
+                    int newDepth = max(depth - 1 - R, 1);
+                    result = negamax(-alpha - 1, -alpha, newDepth, ply + 1, true);
                     result.eval = -result.eval;
                     if (result.eval > alpha) {
-                        // LMR failed
+                        // LMR failed, re-search at full depth via PVS below
                         lmrFailure++;
                     } else {
-                        // LMR success
+                        // LMR success, skip full-depth search
                         doPvs = false;
                         lmrSuccess++;
                     }
@@ -393,6 +423,7 @@ class Search {
                         killers[2*ply + 1] = killers[2*ply];
                         killers[2*ply] = m.move;
                     }
+                    history[(int)m.movePiece][toSq(m.move)] += depth * depth;
                 }
                 break;
             }
@@ -532,6 +563,7 @@ class Search {
 
     void initKillers() {
         memset(killers, 0, sizeof(killers));
+        memset(history, 0, sizeof(history));
     }
 
     void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2) {
@@ -549,7 +581,7 @@ class Search {
                 }
                 if (m.move == killer1) return 10000;
                 if (m.move == killer2) return 9000;
-                return 1000;
+                return history[(int)m.movePiece][toSq(m.move)];
             };
             return score(right) < score(left);
         });
