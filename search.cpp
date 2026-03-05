@@ -126,33 +126,17 @@ class Search {
         startTime = high_resolution_clock::now();
     }
 
-    void computeTimeLimits(int whiteTimeMs, int blackTimeMs) {
+    void computeTimeLimits(int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         const int actualTimeLeft = (board->turn == BoardType::WHITE) ? whiteTimeMs : blackTimeMs;
+        int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
-        // assume 60 moves for the game
-        softTimeLimitMs = myTimeLeft / 60;
-        if (board->moveCount() < 16) {
-            // keep lower time limit in 16 plies of opening
-            softTimeLimitMs = myTimeLeft / 100;
-        } else if (board->moveCount() < 32) {
-            // next 16 plies of late opening / middle game
-            softTimeLimitMs = myTimeLeft / 80;
-        } else if (board->moveCount() < 64) {
-            // next 16 plies of pure middle game
-            softTimeLimitMs = myTimeLeft / 50;
-        }
+        // estimate moves left based on game phase (moveCount is plies, not full moves)
+        int movesLeft = max(30, 50 - (int)board->moveCount() / 4);
+        softTimeLimitMs = myTimeLeft / movesLeft + myInc * 3 / 4;
 
-        if (myTimeLeft < 10 * 1000) {
-            // you can use 1x soft time limit
-            hardTimeLimitMs = softTimeLimitMs;
-        } else if (myTimeLeft < 15 * 1000) {
-            // you can use 2x soft time limit
-            hardTimeLimitMs = 2 * softTimeLimitMs;
-        } else {
-            // you can use min of (3x as much softLimit, or remaining time leaving 10s)
-            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
-        }
+        // hard limit: up to 3x soft, but never more than 1/3 of remaining time
+        hardTimeLimitMs = min(softTimeLimitMs * 3, (long)(myTimeLeft / 3));
     }
 
     void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
@@ -173,9 +157,11 @@ class Search {
         uint16_t bestMove = MOVE_NONE;
         string bestMoveLine;
         int depthEvaluated = 0;
+        uint16_t lastBestMove = MOVE_NONE;
+        int stabilityCount = 0;
 
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
-            // if timer > softThreshold => quit loop
+            // don't start a new iteration past the soft time limit
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
             if (elapsedTime >= softTimeLimitMs) {
@@ -221,6 +207,17 @@ class Search {
             bestMoveEval = result.eval;
             bestMove = result.pvLen > 0 ? result.pv[0] : MOVE_NONE;
 
+            // move stability: if best move unchanged for 3+ iterations after a reasonable time, we are done
+            if (bestMove == lastBestMove) {
+                stabilityCount++;
+            } else {
+                stabilityCount = 0;
+                lastBestMove = bestMove;
+            }
+            if (stabilityCount >= 3 && elapsedTime > softTimeLimitMs / 2) {
+                break;
+            }
+
             // if we find checkmate, there is no need to search deeper
             if (result.eval >= board->checkmateEval) {
                 break;
@@ -260,7 +257,7 @@ class Search {
 
     string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         initSearch(currentBoard);
-        computeTimeLimits(whiteTimeMs, blackTimeMs);
+        computeTimeLimits(whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
 
         string bestMove = runSearch(29);
 
