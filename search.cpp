@@ -131,12 +131,29 @@ class Search {
         int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
-        // estimate moves left based on game phase (moveCount is plies, not full moves)
-        int movesLeft = max(30, 50 - (int)board->moveCount() / 4);
-        softTimeLimitMs = myTimeLeft / movesLeft + myInc * 3 / 4;
+        // phase-aware time allocation: spend less in opening, more in middle game
+        softTimeLimitMs = myTimeLeft / 60;
+        if (board->moveCount() < 16) {
+            // first 16 plies of opening: rely on development patterns, save time
+            softTimeLimitMs = myTimeLeft / 100;
+        } else if (board->moveCount() < 32) {
+            // late opening / early middle game
+            softTimeLimitMs = myTimeLeft / 80;
+        } else if (board->moveCount() < 64) {
+            // pure middle game: spend the most here
+            softTimeLimitMs = myTimeLeft / 50;
+        }
+        softTimeLimitMs += myInc * 3 / 4;
 
-        // hard limit: up to 3x soft, but never more than 1/3 of remaining time
-        hardTimeLimitMs = min(softTimeLimitMs * 3, (long)(myTimeLeft / 3));
+        // tiered hard limits: get progressively tighter as time runs low
+        if (myTimeLeft < 10 * 1000) {
+            hardTimeLimitMs = softTimeLimitMs;
+        } else if (myTimeLeft < 15 * 1000) {
+            hardTimeLimitMs = 2 * softTimeLimitMs;
+        } else {
+            // 3x soft limit, but always keep a 10s reserve
+            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
+        }
     }
 
     void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
@@ -214,7 +231,12 @@ class Search {
                 stabilityCount = 0;
                 lastBestMove = bestMove;
             }
-            if (stabilityCount >= 3 && elapsedTime > softTimeLimitMs / 2) {
+
+            auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
+            if (stabilityCount >= 7 && postSearchTime > softTimeLimitMs / 5) {
+                break; // same move for 7 depths straight, it's not changing
+            }
+            if (stabilityCount >= 3 && postSearchTime > softTimeLimitMs / 3) {
                 break;
             }
 
