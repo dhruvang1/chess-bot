@@ -182,7 +182,33 @@ class Search {
                 break;
             }
 
-            auto result = negamax(NEGATIVE_NUM, POSITIVE_NUM, depth, 0, false);
+            // aspiration window: use narrow window around previous score,
+            // widen exponentially on fail-high/fail-low
+            int alpha = NEGATIVE_NUM, beta = POSITIVE_NUM;
+            int aspiration = 50;
+            if (depth >= 4) {
+                alpha = bestMoveEval - aspiration;
+                beta = bestMoveEval + aspiration;
+            }
+
+            Node result;
+            while (true) {
+                result = negamax(alpha, beta, depth, 0, false);
+
+                if (shouldQuit()) break;
+
+                if (result.eval <= alpha) {
+                    // fail-low: widen alpha
+                    alpha = max(alpha - aspiration, NEGATIVE_NUM);
+                    aspiration *= 2;
+                } else if (result.eval >= beta) {
+                    // fail-high: widen beta
+                    beta = min(beta + aspiration, POSITIVE_NUM);
+                    aspiration *= 2;
+                } else {
+                    break;  // result within window
+                }
+            }
 
             // hard time limit has passed, don't use the above result
             if (shouldQuit() && depth != START_DEPTH) {
