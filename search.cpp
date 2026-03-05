@@ -59,6 +59,7 @@ class Search {
     int cacheSave= 0;
     int cacheSaveSuccess= 0;
     int deltaPrune = 0;
+    int lmpPrune = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int BASE_NULL_MOVE_REDUCTION = 2;
@@ -119,6 +120,7 @@ class Search {
         cacheSave = 0;
         cacheSaveSuccess = 0;
         deltaPrune = 0;
+        lmpPrune = 0;
         orderedMovesLastRound.clear();
         initKillers();
         startTime = high_resolution_clock::now();
@@ -161,7 +163,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
-        cout << "info delta " << deltaPrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit - cachePvHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit - cachePvHit))/cacheHit : 0) << " pvHit " << cachePvHit << endl;
     }
@@ -365,10 +367,19 @@ class Search {
         int index = 0;
         int ttflag = TTFlagAlpha;
         int maxEval = NEGATIVE_NUM;
+        static constexpr int lmpThreshold[] = {0, 8, 14};
         for(const auto& m: legalMoves) {
-            // logmsg(format("{}m {} md {} d {}", prefix, move, maxDepth, depth));
-            board->processMove(m.move);
             bool isQuiet = !(m.isPromotion || m.isCapture);
+
+            // late move pruning: at shallow depth, skip late quiet moves
+            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && index >= lmpThreshold[depth]
+                && m.move != killers[2*ply] && m.move != killers[2*ply+1]) {
+                lmpPrune++;
+                index++;
+                continue;
+            }
+
+            board->processMove(m.move);
             Node result;
             if (index == 0) {
                 result = negamax(-beta, -alpha, depth - 1, ply + 1, true);
