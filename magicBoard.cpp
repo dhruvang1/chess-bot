@@ -25,6 +25,9 @@ public:
         uint64_t boardHash;
         char capturedPiece;
         int capturedSq;
+        int mgEval;
+        int egEval;
+        int gamePhase;
     };
 
     Color turn = WHITE;
@@ -63,11 +66,11 @@ public:
         castlingHashKeys[2] = hashHelper.blackShortCastle;
         castlingHashKeys[3] = hashHelper.blackLongCastle;
 
-        setup();
         initPieceValues();
         initEvalMap();
         initGamePhaseTable();
         initCastlingMask();
+        setup();
         initPassPawnMasks();
         initKnightAttacks();
         initKingAttacks();
@@ -105,7 +108,10 @@ public:
             castlingRights,
             boardHash,
             gonePiece,
-            newSq  // default: captured piece is on destination
+            newSq,  // default: captured piece is on destination
+            mgEval,
+            egEval,
+            gamePhase
         };
 
         // add turn hash
@@ -125,17 +131,20 @@ public:
             if (gonePiece != ' ') {
                 boardHash ^= pieceHash(gonePiece, newSq);
                 getBitboard(gonePiece) &= ~sqToBB(newSq);
+                removePieceEval(gonePiece, newSq);
             }
 
             // delete old pawn
             boardHash ^= pieceHash(movedPiece, currSq);
             getBitboard(movedPiece) &= ~sqToBB(currSq);
             board[currSq] = ' ';
+            removePieceEval(movedPiece, currSq);
 
             // add new piece
             getBitboard(newPiece) |= sqToBB(newSq);
             board[newSq] = newPiece;
             boardHash ^= pieceHash(newPiece, newSq);
+            addPieceEval(newPiece, newSq);
 
         } else if (isKing(board[currSq]) && abs(newSq - currSq) == 2) {
             // if King is moving two squares it is castling
@@ -150,6 +159,7 @@ public:
                 getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
                 board[rookTo] = rook;
                 board[rookFrom] = ' ';
+                movePieceEval(rook, rookFrom, rookTo);
             }
             else if (newSq == currSq - 2) {
                 // queenside castle — move rook
@@ -161,12 +171,14 @@ public:
                 getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
                 board[rookTo] = rook;
                 board[rookFrom] = ' ';
+                movePieceEval(rook, rookFrom, rookTo);
             }
             boardHash ^= pieceHash(movedPiece, currSq);
             boardHash ^= pieceHash(movedPiece, newSq);
             getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
             board[newSq] = movedPiece;
             board[currSq] = ' ';
+            movePieceEval(movedPiece, currSq, newSq);
         } else {
             // handle double pawn moves
             if (isPawn(movedPiece) && abs(rowOf(newSq) - rowOf(currSq)) == 2) {
@@ -183,6 +195,7 @@ public:
 
                 // remove the captured pawn
                 boardHash ^= pieceHash(board[capturedSq], capturedSq);
+                removePieceEval(board[capturedSq], capturedSq);
                 getBitboard(board[capturedSq]) &= ~sqToBB(capturedSq);
                 board[capturedSq] = ' ';
             }
@@ -190,6 +203,7 @@ public:
             if (gonePiece != ' ') {
                 boardHash ^= pieceHash(gonePiece, newSq);
                 getBitboard(gonePiece) &= ~sqToBB(newSq);
+                removePieceEval(gonePiece, newSq);
             }
 
             // Actual piece movement
@@ -198,6 +212,7 @@ public:
             getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
             board[newSq] = movedPiece;
             board[currSq] = ' ';
+            movePieceEval(movedPiece, currSq, newSq);
         }
 
         prevMoves.push_back(std::move(info));
@@ -286,6 +301,9 @@ public:
         enPassantCol = info.enPassantCol;
         castlingRights = info.castlingRights;
         boardHash = info.boardHash;
+        mgEval = info.mgEval;
+        egEval = info.egEval;
+        gamePhase = info.gamePhase;
 
         // Recompute aggregates
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
@@ -295,7 +313,7 @@ public:
 
     void processNullMove() {
         evalCalculated = false;
-        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1};
+        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase};
         prevMoves.push_back(std::move(info));
         boardHash ^= hashHelper.getTurnHash();
         maybeResetEnPassantHash();
@@ -308,6 +326,9 @@ public:
         prevMoves.pop_back();
         enPassantCol = info.enPassantCol;
         boardHash = info.boardHash;
+        mgEval = info.mgEval;
+        egEval = info.egEval;
+        gamePhase = info.gamePhase;
         flipTurn();
     }
 
@@ -347,38 +368,28 @@ public:
         return isSquareAttackedByColor(toSq(row, col), color);
     }
 
-    // TODO, could use bitboards for calculation
     int getBoardEval() {
         if (evalCalculated) {
             return eval;
         }
 
         eval = 0;
-        gamePhase = 0;
-        int mgEval = 0;
-        int egEval = 0;
         int wpCounts[8]{};  // white pawns per file
         int bpCounts[8]{};  // black pawns per file
 
-        // Material + piece-square table scores
-        for (int sq = 0; sq < 64; sq++) {
-            char c = board[sq];
-            if (c == ' ') continue;
+        // Count pawns per file for pawn structure eval
+        uint64_t wp = whitePawns;
+        while (wp) { int sq = __builtin_ctzll(wp); wpCounts[colOf(sq)]++; wp &= wp - 1; }
+        uint64_t bp = blackPawns;
+        while (bp) { int sq = __builtin_ctzll(bp); bpCounts[colOf(sq)]++; bp &= bp - 1; }
 
-            mgEval += pieceValue[c] + evalTable[c][0][sq];
-            egEval += pieceValue[c] + evalTable[c][1][sq];
-            gamePhase += gamePhaseTable[c];
-            if (c == 'P') wpCounts[colOf(sq)]++;
-            else if (c == 'p') bpCounts[colOf(sq)]++;
-        }
+        int gp = min(gamePhase, 24);
 
-        if (gamePhase > 24) gamePhase = 24;
-
-        // Tapered eval: blend middlegame and endgame scores by game phase
-        eval += (gamePhase * mgEval + (24 - gamePhase) * egEval) / 24;
+        // Tapered eval: blend incrementally maintained middlegame and endgame scores
+        eval += (gp * mgEval + (24 - gp) * egEval) / 24;
 
         // Bishop pair: bonus scales from 5% to 30% of pawn value as pieces come off
-        double bishopPairBonus = (gamePhase * 0.05 + (24 - gamePhase) * 0.3) / 24;
+        double bishopPairBonus = (gp * 0.05 + (24 - gp) * 0.3) / 24;
 
         if ((whiteBishops & lightSquareMask) && (whiteBishops & darkSquareMask)) {
             eval += int(bishopPairBonus * pieceValue['P']);
@@ -388,13 +399,13 @@ public:
         }
 
         // Pawn structure penalties scale up toward endgame
-        double doubledPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
-        double doubledIsolatedPawnsPenalty = (24 - gamePhase) * 0.2 / 24;
-        double isolatedPawnsPenalty = (24 - gamePhase) * 0.4 / 24;
+        double doubledPawnsPenalty = (24 - gp) * 0.4 / 24;
+        double doubledIsolatedPawnsPenalty = (24 - gp) * 0.2 / 24;
+        double isolatedPawnsPenalty = (24 - gp) * 0.4 / 24;
         // Passed pawn bonus scales by rank: further advanced = exponentially more valuable
         // Index by rank for white (rank 2=row1 through rank 7=row6)
         static const int passedPawnByRank[] = {0, 5, 10, 20, 40, 80, 120, 0};
-        double passedPawnPhase = (gamePhase * 0.3 + (24 - gamePhase) * 1.0) / 24;
+        double passedPawnPhase = (gp * 0.3 + (24 - gp) * 1.0) / 24;
 
         // king squares for passed pawn proximity (king escort / interception)
         int wkSq = __builtin_ctzll(whiteKing);
@@ -402,7 +413,7 @@ public:
         int wkR = rowOf(wkSq), wkC = colOf(wkSq);
         int bkR = rowOf(bkSq), bkC = colOf(bkSq);
         // proximity weight scales from 0 (opening) to 5cp per distance unit (endgame)
-        int proxWeight = 5 * (24 - gamePhase) / 24;
+        int proxWeight = 5 * (24 - gp) / 24;
 
         for (int j = 0; j < 8; j++) {
             if (wpCounts[j] >= 1) {
@@ -455,7 +466,7 @@ public:
         }
 
         // King safety: reward pawn shield in front of castled king
-        if (gamePhase >= 16) {
+        if (gp >= 16) {
             int wkSq = __builtin_ctzll(whiteKing);
             int wkRow = rowOf(wkSq), wkCol = colOf(wkSq);
             if (wkRow == 0 && wkCol == 6) {  // kingside castle position
@@ -479,11 +490,11 @@ public:
 
         // Minor piece mobility: scales down toward endgame
         int minorDiff = getMinorMobility(WHITE) - getMinorMobility(BLACK);
-        eval += (gamePhase * minorDiff + (24 - gamePhase) * minorDiff / 3) / 24;
+        eval += (gp * minorDiff + (24 - gp) * minorDiff / 3) / 24;
 
         // Rook mobility: scales UP toward endgame (rooks dominate open positions)
         int rookDiff = getRookMobility(WHITE) - getRookMobility(BLACK);
-        eval += (gamePhase * rookDiff / 2 + (24 - gamePhase) * rookDiff) / 24;
+        eval += (gp * rookDiff / 2 + (24 - gp) * rookDiff) / 24;
 
         // Queen mobility: flat weight
         eval += getQueenMobility(WHITE) - getQueenMobility(BLACK);
@@ -539,11 +550,7 @@ public:
     }
 
     int getGamePhase() {
-        if (evalCalculated) {
-            return gamePhase;
-        }
-        getBoardEval();
-        return gamePhase;
+        return min(gamePhase, 24);
     }
 
     bool isPositionRepeated() {
@@ -663,11 +670,30 @@ private:
     int castlingRights = WHITE_OO | WHITE_OOO | BLACK_OO | BLACK_OOO; // 15 at start
     int castlingMask[64]; // mapping squares to castling rights effects
 
+    int mgEval = 0;
+    int egEval = 0;
     int gamePhase = 0;
-    int gamePhaseTable[256]{}; // piece, middle game/ end game, row, col
+    int gamePhaseTable[256]{};
 
     bool evalCalculated = false;
     int eval = 0;
+
+    inline void addPieceEval(char piece, int sq) {
+        mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
+        egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
+        gamePhase += gamePhaseTable[(int)piece];
+    }
+
+    inline void removePieceEval(char piece, int sq) {
+        mgEval -= pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
+        egEval -= pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
+        gamePhase -= gamePhaseTable[(int)piece];
+    }
+
+    inline void movePieceEval(char piece, int fromSq, int toSq) {
+        mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
+        egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
+    }
 
     int evalTable[256][2][64]{};
 
@@ -746,9 +772,15 @@ private:
         board[toSq(7,7)] = 'r';
 
         boardHash = 0;
+        mgEval = 0;
+        egEval = 0;
+        gamePhase = 0;
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
+                mgEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][0][sq];
+                egEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][1][sq];
+                gamePhase += gamePhaseTable[(int)board[sq]];
             }
         }
         boardHash ^= hashHelper.whiteShortCastle;

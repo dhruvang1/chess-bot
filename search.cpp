@@ -34,17 +34,21 @@ static void initLMR() {
 class Search {
     static const int POSITIVE_NUM = 1 << 30;
     static const int NEGATIVE_NUM = - POSITIVE_NUM;
-    static const int MAX_PV = 64;
+    static const int MAX_PLY = 128;
 
     BoardType* board;
     vector<TTEntry> ttable;
-    vector<TTEntry> qttable;
     uint16_t killers[128] = {};
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
     // since the truly bad moves end up at high indices where they get aggressively reduced.
     // Indexed by ASCII char value (e.g. 'N'=78, 'p'=112) so 128 covers all pieces.
     int history[128][64] = {};
+
+    // Triangular PV table: pvTable[ply][ply..ply+pvLength[ply]-1] stores the PV from that ply.
+    // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
+    uint16_t pvTable[MAX_PLY][MAX_PLY] = {};
+    int pvLength[MAX_PLY] = {};
 
     int nodes = 0;
     int qNodes = 0;
@@ -55,7 +59,6 @@ class Search {
     int lmrFailure = 0;
     int cacheHit= 0;
     int cacheFutileHit= 0;
-    int cachePvHit= 0;
     int cacheSave= 0;
     int cacheSaveSuccess= 0;
     int deltaPrune = 0;
@@ -70,14 +73,13 @@ class Search {
     MoveList orderedMovesLastRound;
     ofstream ofile;
 
-    struct Node {
-        int eval{0};
-        uint16_t pv[MAX_PV] = {};
-        int pvLen = 0;
-        Node(){};
-
-        Node(int eval) : eval(eval), pvLen(0) {}
-    };
+    inline void updatePv(int ply, uint16_t move) {
+        pvTable[ply][ply] = move;
+        int childLen = pvLength[ply + 1];
+        int copyLen = min(childLen, MAX_PLY - ply - 1);
+        memcpy(&pvTable[ply][ply + 1], &pvTable[ply + 1][ply + 1], copyLen * sizeof(uint16_t));
+        pvLength[ply] = copyLen + 1;
+    }
 
     static inline bool isManual() {
         auto isManual = getenv("manual");
@@ -96,11 +98,11 @@ class Search {
         return elapsedTime >= hardTimeLimitMs;
     }
 
-    static string pvToString(const uint16_t* pv, int pvLen) {
+    string pvToString(int ply = 0) {
         string s;
-        for (int i = 0; i < pvLen; i++) {
+        for (int i = 0; i < pvLength[ply]; i++) {
             if (i > 0) s += ' ';
-            s += moveToUci(pv[i]);
+            s += moveToUci(pvTable[ply][ply + i]);
         }
         return s;
     }
@@ -116,7 +118,6 @@ class Search {
         lmrFailure = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
-        cachePvHit = 0;
         cacheSave = 0;
         cacheSaveSuccess = 0;
         deltaPrune = 0;
@@ -165,8 +166,8 @@ class Search {
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << endl;
-        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit - cachePvHit
-             << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit - cachePvHit))/cacheHit : 0) << " pvHit " << cachePvHit << endl;
+        cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
+             << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
 
     string runSearch(int maxDepth) {
@@ -194,22 +195,20 @@ class Search {
                 beta = bestMoveEval + aspiration;
             }
 
-            Node result;
+            int eval;
             while (true) {
-                result = negamax(alpha, beta, depth, 0, false);
+                eval = negamax(alpha, beta, depth, 0, false);
 
                 if (shouldQuit()) break;
 
-                if (result.eval <= alpha) {
-                    // fail-low: widen alpha
+                if (eval <= alpha) {
                     alpha = max(alpha - aspiration, NEGATIVE_NUM);
                     aspiration *= 2;
-                } else if (result.eval >= beta) {
-                    // fail-high: widen beta
+                } else if (eval >= beta) {
                     beta = min(beta + aspiration, POSITIVE_NUM);
                     aspiration *= 2;
                 } else {
-                    break;  // result within window
+                    break;
                 }
             }
 
@@ -218,11 +217,10 @@ class Search {
                 break;
             }
 
-            // gather result
             depthEvaluated = depth;
-            bestMoveLine = pvToString(result.pv, result.pvLen);
-            bestMoveEval = result.eval;
-            bestMove = result.pvLen > 0 ? result.pv[0] : MOVE_NONE;
+            bestMoveLine = pvToString();
+            bestMoveEval = eval;
+            bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
 
             // move stability: if best move unchanged for 3+ iterations after a reasonable time, we are done
             if (bestMove == lastBestMove) {
@@ -234,14 +232,13 @@ class Search {
 
             auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
             if (stabilityCount >= 7 && postSearchTime > softTimeLimitMs / 5) {
-                break; // same move for 7 depths straight, it's not changing
+                break;
             }
             if (stabilityCount >= 3 && postSearchTime > softTimeLimitMs / 3) {
                 break;
             }
 
-            // if we find checkmate, there is no need to search deeper
-            if (result.eval >= BoardType::mateThreshold) {
+            if (eval >= BoardType::mateThreshold) {
                 break;
             }
         }
@@ -292,16 +289,17 @@ class Search {
         return bestMove;
     }
 
-    Node negamax(int alpha, int beta, int depth, int ply, bool nullAllowed) {
+    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed) {
         nodes++;
+        pvLength[ply] = 0;
 
         if (nullAllowed && board->isPositionRepeated()) {
             // give three-fold repetition the eval 0, so we go for it in worse positions and avoid it in good positions.
-            return {0};
+            return 0;
         }
 
         if (!board->isKingPresent()) {
-            return {-(BoardType::checkmateEval - ply)};
+            return -(BoardType::checkmateEval - ply);
         }
 
         // Check transposition table for cached result
@@ -309,27 +307,22 @@ class Search {
         uint16_t ttMove = MOVE_NONE;
         if (ttEntry != nullptr) {
             int ttEval = mateScoreFromTT(ttEntry->eval, ply);
-            if (alpha == beta -1 ) {
+            if (alpha == beta - 1) {
                 cacheHit++;
                 if (ttEntry->depth >= depth) {
                     if (ttEntry->flag == TTFlagExact) {
-                        Node n(ttEval);
-                        memcpy(n.pv, ttEntry->pv, ttEntry->pvLen * sizeof(uint16_t));
-                        n.pvLen = ttEntry->pvLen;
-                        return n;
+                        return ttEval;
                     } else if (ttEntry->flag == TTFlagBeta && ttEval >= beta) {
-                        return {beta};
+                        return beta;
                     } else if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) {
-                        return {alpha};
+                        return alpha;
                     }
                 }
-                ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
+                ttMove = ttEntry->bestMove;
                 cacheFutileHit++;
-            } else if (ttEntry->flag == TTFlagExact && ttEntry->depth >= depth && alpha < ttEval && ttEval < beta){
-                cacheHit++;
-                cachePvHit++;
-                ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
-                // TODO: We can just return directly here
+            } else {
+                // PV node: only use TT for move ordering, never return early
+                ttMove = ttEntry->bestMove;
             }
         } else if (depth > 3){
             // internal iterative deepening
@@ -337,14 +330,13 @@ class Search {
         }
 
         if (depth <= 0) {
-            Node result = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply + 1);
-            saveInTT(result.pv, result.pvLen, result.eval, depth, TTFlagExact, ply);
-            return result;
+            int eval = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply);
+            saveInTT(pvLength[ply] > 0 ? pvTable[ply][ply] : MOVE_NONE, eval, depth, TTFlagExact, ply);
+            return eval;
         }
 
-        if (shouldQuit()) {
-            // only evaluate if we are just starting
-            return {ply == 0 && depth == START_DEPTH ? board->getBoardEval(): 0};
+        if ((nodes & 4095) == 0 && shouldQuit()) {
+            return ply == 0 && depth == START_DEPTH ? board->getBoardEval() : 0;
         }
 
         bool inCheck = board->isKingInCheck();
@@ -358,7 +350,7 @@ class Search {
             && abs(beta) < BoardType::mateThreshold) {
             int rfpMargin = depth * 150;
             if (board->getBoardEval() - rfpMargin >= beta) {
-                return Node(beta);
+                return beta;
             }
         }
 
@@ -377,39 +369,28 @@ class Search {
             // The below checks the line when we reach down a valid path and there are no legal moves.
             if (inCheck) {
                 // this is checkmate
-                return Node(-(BoardType::checkmateEval - ply));
+                return -(BoardType::checkmateEval - ply);
             } else {
-                // this is stalemate.
                 // stalemate is still considered "bad" to not incentivize going for it in good or slightly bad positions.
                 // its given eval of a minor piece => if the position is worse than a minor piece, than stalemate is considered better so "try" to go for it.
-                return Node(-(BoardType::stalemateEval));
+                return -(BoardType::stalemateEval);
             }
         }
 
-        // do null move
-        if (nullAllowed && board->getGamePhase() > 0 && depth > 2) {
+        // null move pruning
+        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold) {
             board->processNullMove();
-            Node result = negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth / 7)), ply + 1, false);
-            result.eval = -result.eval;
-
-            // undo null move
+            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth / 7)), ply + 1, false);
             board->undoNullMove();
 
-            if (result.eval >= beta) { // cutoff
+            if (nullEval >= beta) {
                 cutOff++;
-                return result;
+                return nullEval;
             }
         }
 
-//        string prefix;
-//        for(int i=0;i<maxDepth - depth;i++) {
-//            prefix += "  ";
-//        }
-
-
         vector<pair<int, Move>> resultList;
-        uint16_t bestPv[MAX_PV] = {};
-        int bestPvLen = 0;
+        uint16_t bestMove = MOVE_NONE;
         int index = 0;
         int ttflag = TTFlagAlpha;
         int maxEval = NEGATIVE_NUM;
@@ -426,10 +407,9 @@ class Search {
             }
 
             board->processMove(m.move);
-            Node result;
+            int eval;
             if (index == 0) {
-                result = negamax(-beta, -alpha, depth - 1, ply + 1, true);
-                result.eval = -result.eval;
+                eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true);
             } else {
                 bool doPvs = true;
                 // TODO: also apply LMR to losing captures (see(m) < 0)
@@ -439,48 +419,40 @@ class Search {
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
-                    result = negamax(-alpha - 1, -alpha, newDepth, ply + 1, true);
-                    result.eval = -result.eval;
-                    if (result.eval > alpha) {
-                        // LMR failed, re-search at full depth via PVS below
+                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true);
+                    if (eval > alpha) {
                         lmrFailure++;
                     } else {
-                        // LMR success, skip full-depth search
                         doPvs = false;
                         lmrSuccess++;
                     }
                 }
 
                 if (doPvs) {
-                    result = negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true);
-                    result.eval = -result.eval;
-                    if (result.eval > alpha && result.eval < beta) {
-                        // pvs failed, do full search
+                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true);
+                    if (eval > alpha && eval < beta) {
                         pvsFailure++;
-                        result = negamax(-beta, -alpha, depth - 1, ply + 1, true);
-                        result.eval = -result.eval;
+                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true);
                     } else {
                         pvsSuccess++;
                     }
                 }
             }
-            // logmsg(format("{}m {} md {} d {} cp {}", prefix, move, maxDepth, depth, result.eval));
             board->undoMove();
-            if (result.eval > maxEval) {
-                maxEval = result.eval;
-                bestPv[0] = m.move;
-                int copyLen = min(result.pvLen, MAX_PV - 1);
-                memcpy(bestPv + 1, result.pv, copyLen * sizeof(uint16_t));
-                bestPvLen = copyLen + 1;
+
+            if (eval > maxEval) {
+                maxEval = eval;
+                bestMove = m.move;
+                updatePv(ply, m.move);
             }
 
-            if (result.eval > alpha) {
-                alpha = max(alpha, result.eval);
+            if (eval > alpha) {
+                alpha = eval;
                 ttflag = TTFlagExact;
             }
 
             if (ply == 0) {
-                resultList.emplace_back(result.eval, m);
+                resultList.emplace_back(eval, m);
             }
 
             if (beta <= alpha) {
@@ -497,65 +469,49 @@ class Search {
             index++;
         }
 
-
         if (ply == 0) {
-            // with negamax we should always sort by descending
             sort(resultList.begin(), resultList.end(), [](auto left, auto right) {
                 return right.first < left.first;
             });
 
             orderedMovesLastRound.clear();
-
-            // fill orderedMoves for next round
             for (auto &i: resultList) {
                 orderedMovesLastRound.push_back(i.second);
             }
         }
 
-        saveInTT(bestPv, bestPvLen, maxEval, depth, ttflag, ply);
-
-        Node n(maxEval);
-        memcpy(n.pv, bestPv, bestPvLen * sizeof(uint16_t));
-        n.pvLen = bestPvLen;
-        return n;
+        saveInTT(bestMove, maxEval, depth, ttflag, ply);
+        return maxEval;
     }
 
 
-    Node quiescenceSearch(int alpha, int beta, int depth, int ply) {
+    int quiescenceSearch(int alpha, int beta, int depth, int ply) {
         qNodes++;
+        pvLength[ply] = 0;
 
         if (!board->isKingPresent()) {
-            return Node(-(BoardType::checkmateEval - ply));
+            return -(BoardType::checkmateEval - ply);
         }
 
         if (depth == 0) {
-            return Node(board->getBoardEval());
+            return board->getBoardEval();
         }
 
         int boardEval = board->getBoardEval();
         if (boardEval >= beta) {
-            return Node(boardEval);
+            return boardEval;
         }
         alpha = max(alpha, boardEval);
-
 
         MoveList legalMoves;
         board->getCapturesPromo(legalMoves);
         if (legalMoves.empty()) {
-            // not perfect
-            return Node(boardEval);
+            return boardEval;
         }
 
         uint16_t noMove = MOVE_NONE;
         reorderMoves(legalMoves, noMove, noMove, noMove);
 
-//        string prefix;
-//        for(int i=0;i<ply + (QSEARCH_MAX_DEPTH - depth);i++) {
-//            prefix += "  ";
-//        }
-
-        uint16_t bestPv[MAX_PV] = {};
-        int bestPvLen = 0;
         int maxEval = alpha;
         int delta = 300;
         for(const auto& m: legalMoves) {
@@ -571,20 +527,16 @@ class Search {
             }
 
             board->processMove(m.move);
-            auto result = quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
-            result.eval = -result.eval;
+            int eval = -quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
             board->undoMove();
 
-            if (result.eval > maxEval) {
-                maxEval = result.eval;
-                bestPv[0] = m.move;
-                int copyLen = min(result.pvLen, MAX_PV - 1);
-                memcpy(bestPv + 1, result.pv, copyLen * sizeof(uint16_t));
-                bestPvLen = copyLen + 1;
+            if (eval > maxEval) {
+                maxEval = eval;
+                updatePv(ply, m.move);
             }
 
-            if (result.eval > alpha) {
-                alpha = max(alpha, result.eval);
+            if (eval > alpha) {
+                alpha = eval;
             }
 
             if (beta <= alpha) {
@@ -592,10 +544,7 @@ class Search {
             }
         }
 
-        Node n(maxEval);
-        memcpy(n.pv, bestPv, bestPvLen * sizeof(uint16_t));
-        n.pvLen = bestPvLen;
-        return n;
+        return maxEval;
     }
 
     // Convert root-relative mate score to position-relative for TT storage
@@ -612,7 +561,7 @@ class Search {
         return eval;
     }
 
-    void saveInTT(const uint16_t* pv, int pvLen, int eval, int depth, int flag, int ply) {
+    void saveInTT(uint16_t bestMove, int eval, int depth, int flag, int ply) {
         cacheSave++;
         int ttEval = mateScoreToTT(eval, ply);
         int index = (board->getHash() % TTKeySize) * 2;
@@ -620,14 +569,13 @@ class Search {
         auto entry = &ttable[index];
         auto secondEntry = &ttable[index + 1];
 
-        // fill up the first entry before moving ahead
         if (entry -> hash == 0) {
-            entry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
+            entry -> update(board->getHash(), bestMove, ttEval, depth, flag);
         } else if (depth >= entry -> depth) {
             secondEntry->update(entry);
-            entry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
+            entry -> update(board->getHash(), bestMove, ttEval, depth, flag);
         } else {
-            secondEntry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
+            secondEntry -> update(board->getHash(), bestMove, ttEval, depth, flag);
         }
         cacheSaveSuccess++;
     }
