@@ -2,9 +2,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <sstream>
 #include <fstream>
 #include <cmath>
+#include <chrono>
 
 #include "magicBoard.cpp"
 using BoardType = MagicBoard;
@@ -44,6 +44,7 @@ class Search {
     // since the truly bad moves end up at high indices where they get aggressively reduced.
     // Indexed by ASCII char value (e.g. 'N'=78, 'p'=112) so 128 covers all pieces.
     int history[128][64] = {};
+    uint16_t countermoves[128][64] = {};
 
     // Triangular PV table: pvTable[ply][ply..ply+pvLength[ply]-1] stores the PV from that ply.
     // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
@@ -289,7 +290,7 @@ class Search {
         return bestMove;
     }
 
-    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed) {
+    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ') {
         nodes++;
         pvLength[ply] = 0;
 
@@ -354,13 +355,18 @@ class Search {
             }
         }
 
+        uint16_t counterMove = MOVE_NONE;
+        if (prevMove != MOVE_NONE) {
+            counterMove = countermoves[(int)prevPiece][toSq(prevMove)];
+        }
+
         MoveList legalMoves;
         // use last round's move as starting point in search
         if (ply == 0 && !orderedMovesLastRound.empty()) {
             legalMoves = orderedMovesLastRound;
         } else {
             board->getLegalMoves(legalMoves);
-            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1]);
+            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove);
         }
 
         if (legalMoves.empty()) {
@@ -400,7 +406,7 @@ class Search {
 
             // late move pruning: at shallow depth, skip late quiet moves
             if (ply > 0 && isQuiet && !inCheck && depth <= 2 && index >= lmpThreshold[depth]
-                && m.move != killers[2*ply] && m.move != killers[2*ply+1]) {
+                && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
                 index++;
                 continue;
@@ -409,17 +415,17 @@ class Search {
             board->processMove(m.move);
             int eval;
             if (index == 0) {
-                eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true);
+                eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
                 // TODO: also apply LMR to losing captures (see(m) < 0)
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1]) {
+                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(index, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
-                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true);
+                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, m.move, m.movePiece);
                     if (eval > alpha) {
                         lmrFailure++;
                     } else {
@@ -429,10 +435,10 @@ class Search {
                 }
 
                 if (doPvs) {
-                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true);
+                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
                     if (eval > alpha && eval < beta) {
                         pvsFailure++;
-                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true);
+                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
                     } else {
                         pvsSuccess++;
                     }
@@ -463,6 +469,9 @@ class Search {
                         killers[2*ply] = m.move;
                     }
                     history[(int)m.movePiece][toSq(m.move)] += depth * depth;
+                    if (prevMove != MOVE_NONE) {
+                        countermoves[(int)prevPiece][toSq(prevMove)] = m.move;
+                    }
                 }
                 break;
             }
@@ -594,9 +603,10 @@ class Search {
     void initKillers() {
         memset(killers, 0, sizeof(killers));
         memset(history, 0, sizeof(history));
+        memset(countermoves, 0, sizeof(countermoves));
     }
 
-    void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2) {
+    void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2, uint16_t counterMove = MOVE_NONE) {
         const int* pv = board->pieceValue;
         sort(legalMoves.begin(), legalMoves.end(),[&, pv](const auto &left, const auto &right){
             auto score = [&](const Move& m) -> int {
@@ -611,6 +621,7 @@ class Search {
                 }
                 if (m.move == killer1) return 10000;
                 if (m.move == killer2) return 9000;
+                if (m.move == counterMove) return 8000;
                 return history[(int)m.movePiece][toSq(m.move)];
             };
             return score(right) < score(left);

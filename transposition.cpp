@@ -1,6 +1,7 @@
 #include <string>
 #include <cstdint>
 #include <cstring>
+#include <climits>
 using namespace std;
 
 static const int TTFlagAlpha = 0;  // we couldn't reach the alpha of the position
