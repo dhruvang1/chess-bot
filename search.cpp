@@ -39,7 +39,7 @@ class Search {
     BoardType* board;
     vector<TTEntry> ttable;
     vector<TTEntry> qttable;
-    uint16_t killers[100] = {};
+    uint16_t killers[128] = {};
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
     // since the truly bad moves end up at high indices where they get aggressively reduced.
@@ -241,7 +241,7 @@ class Search {
             }
 
             // if we find checkmate, there is no need to search deeper
-            if (result.eval >= board->checkmateEval) {
+            if (result.eval >= BoardType::mateThreshold) {
                 break;
             }
         }
@@ -301,30 +301,31 @@ class Search {
         }
 
         if (!board->isKingPresent()) {
-            return {-(BoardType::checkmateEval + depth)};
+            return {-(BoardType::checkmateEval - ply)};
         }
 
         // Check transposition table for cached result
         const TTEntry* ttEntry = getTTEntry(board -> getHash());
         uint16_t ttMove = MOVE_NONE;
         if (ttEntry != nullptr) {
+            int ttEval = mateScoreFromTT(ttEntry->eval, ply);
             if (alpha == beta -1 ) {
                 cacheHit++;
                 if (ttEntry->depth >= depth) {
                     if (ttEntry->flag == TTFlagExact) {
-                        Node n(ttEntry->eval);
+                        Node n(ttEval);
                         memcpy(n.pv, ttEntry->pv, ttEntry->pvLen * sizeof(uint16_t));
                         n.pvLen = ttEntry->pvLen;
                         return n;
-                    } else if (ttEntry->flag == TTFlagBeta && ttEntry->eval >= beta) {
+                    } else if (ttEntry->flag == TTFlagBeta && ttEval >= beta) {
                         return {beta};
-                    } else if (ttEntry->flag == TTFlagAlpha && ttEntry->eval <= alpha) {
+                    } else if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) {
                         return {alpha};
                     }
                 }
                 ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
                 cacheFutileHit++;
-            } else if (ttEntry->flag == TTFlagExact && ttEntry->depth >= depth && alpha < ttEntry->eval && ttEntry->eval < beta){
+            } else if (ttEntry->flag == TTFlagExact && ttEntry->depth >= depth && alpha < ttEval && ttEval < beta){
                 cacheHit++;
                 cachePvHit++;
                 ttMove = ttEntry->pvLen > 0 ? ttEntry->pv[0] : MOVE_NONE;
@@ -337,7 +338,7 @@ class Search {
 
         if (depth <= 0) {
             Node result = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply + 1);
-            saveInTT(result.pv, result.pvLen, result.eval, depth, TTFlagExact);
+            saveInTT(result.pv, result.pvLen, result.eval, depth, TTFlagExact, ply);
             return result;
         }
 
@@ -354,7 +355,7 @@ class Search {
 
         // reverse futility pruning: position is so far above beta, skip searching
         if (depth <= 3 && alpha == beta - 1 && !inCheck
-            && abs(beta) < BoardType::checkmateEval) {
+            && abs(beta) < BoardType::mateThreshold) {
             int rfpMargin = depth * 150;
             if (board->getBoardEval() - rfpMargin >= beta) {
                 return Node(beta);
@@ -376,7 +377,7 @@ class Search {
             // The below checks the line when we reach down a valid path and there are no legal moves.
             if (inCheck) {
                 // this is checkmate
-                return Node(-(BoardType::checkmateEval + depth));
+                return Node(-(BoardType::checkmateEval - ply));
             } else {
                 // this is stalemate.
                 // stalemate is still considered "bad" to not incentivize going for it in good or slightly bad positions.
@@ -511,7 +512,7 @@ class Search {
             }
         }
 
-        saveInTT(bestPv, bestPvLen, maxEval, depth, ttflag);
+        saveInTT(bestPv, bestPvLen, maxEval, depth, ttflag, ply);
 
         Node n(maxEval);
         memcpy(n.pv, bestPv, bestPvLen * sizeof(uint16_t));
@@ -520,11 +521,11 @@ class Search {
     }
 
 
-    Node quiescenceSearch(int alpha, int beta, int depth, int minmaxDepth) {
+    Node quiescenceSearch(int alpha, int beta, int depth, int ply) {
         qNodes++;
 
         if (!board->isKingPresent()) {
-            return Node(-(BoardType::checkmateEval + depth));
+            return Node(-(BoardType::checkmateEval - ply));
         }
 
         if (depth == 0) {
@@ -549,7 +550,7 @@ class Search {
         reorderMoves(legalMoves, noMove, noMove, noMove);
 
 //        string prefix;
-//        for(int i=0;i<minmaxDepth + (QSEARCH_MAX_DEPTH - depth);i++) {
+//        for(int i=0;i<ply + (QSEARCH_MAX_DEPTH - depth);i++) {
 //            prefix += "  ";
 //        }
 
@@ -570,7 +571,7 @@ class Search {
             }
 
             board->processMove(m.move);
-            auto result = quiescenceSearch(-beta, -alpha, depth - 1, minmaxDepth);
+            auto result = quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
             result.eval = -result.eval;
             board->undoMove();
 
@@ -597,8 +598,23 @@ class Search {
         return n;
     }
 
-    void saveInTT(const uint16_t* pv, int pvLen, int eval, int depth, int flag) {
+    // Convert root-relative mate score to position-relative for TT storage
+    static inline int mateScoreToTT(int eval, int ply) {
+        if (eval >= BoardType::mateThreshold) return eval + ply;
+        if (eval <= -BoardType::mateThreshold) return eval - ply;
+        return eval;
+    }
+
+    // Convert position-relative mate score from TT back to root-relative
+    static inline int mateScoreFromTT(int eval, int ply) {
+        if (eval >= BoardType::mateThreshold) return eval - ply;
+        if (eval <= -BoardType::mateThreshold) return eval + ply;
+        return eval;
+    }
+
+    void saveInTT(const uint16_t* pv, int pvLen, int eval, int depth, int flag, int ply) {
         cacheSave++;
+        int ttEval = mateScoreToTT(eval, ply);
         int index = (board->getHash() % TTKeySize) * 2;
 
         auto entry = &ttable[index];
@@ -606,12 +622,12 @@ class Search {
 
         // fill up the first entry before moving ahead
         if (entry -> hash == 0) {
-            entry -> update(board->getHash(), pv, pvLen, eval, depth, flag);
+            entry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
         } else if (depth >= entry -> depth) {
             secondEntry->update(entry);
-            entry -> update(board->getHash(), pv, pvLen, eval, depth, flag);
+            entry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
         } else {
-            secondEntry -> update(board->getHash(), pv, pvLen, eval, depth, flag);
+            secondEntry -> update(board->getHash(), pv, pvLen, ttEval, depth, flag);
         }
         cacheSaveSuccess++;
     }

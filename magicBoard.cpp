@@ -34,6 +34,7 @@ public:
     int enPassantCol = -1;
 
     static inline int checkmateEval = 15000;
+    static inline int mateThreshold = checkmateEval - 100;
     static inline int stalemateEval = 0;
 
     int pieceValue[256]{};

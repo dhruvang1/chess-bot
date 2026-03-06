@@ -21,6 +21,7 @@ public:
     int enPassantCol = -1;
 
     static inline int checkmateEval = 15000;
+    static inline int mateThreshold = checkmateEval - 100;
     static inline int stalemateEval = 0; // see comments where its used
 
     // table for keeping values of each piece
