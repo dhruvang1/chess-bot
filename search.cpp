@@ -70,6 +70,8 @@ class Search {
     high_resolution_clock::time_point startTime;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
+    float earlyExitFraction{};
+    long minThinkMs{};
     int handicapTimeLeftMs = INT_MAX;
     MoveList orderedMovesLastRound;
     ofstream ofile;
@@ -156,6 +158,16 @@ class Search {
             // 3x soft limit, but always keep a 10s reserve
             hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
         }
+
+        // Tapered early-exit fraction: how much of the soft limit must elapse
+        // before stability can trigger an early exit.
+        // 600s+ → 0.5 (spend at least half the budget), ~10s → 0.1 (exit ASAP).
+        earlyExitFraction = 0.1f + 0.4f * min(1.0f, myTimeLeft / 600000.0f);
+
+        // Spend at least 75% of the increment before any stability exit fires.
+        // Prevents gaining time every move in increment-heavy time controls (e.g. 1+1).
+        // Zero for no-increment games so behavior is unchanged.
+        minThinkMs = myInc * 3 / 4;
     }
 
     void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
@@ -232,10 +244,13 @@ class Search {
             }
 
             auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
-            if (stabilityCount >= 7 && postSearchTime > softTimeLimitMs / 5) {
+            if (stabilityCount >= 15 && postSearchTime > (long)(softTimeLimitMs * earlyExitFraction) ) {
                 break;
             }
-            if (stabilityCount >= 3 && postSearchTime > softTimeLimitMs / 3) {
+            if (stabilityCount >= 7 && postSearchTime > max((long)(softTimeLimitMs * earlyExitFraction), minThinkMs)) {
+                break;
+            }
+            if (stabilityCount >= 3 && postSearchTime > max((long)(softTimeLimitMs * (earlyExitFraction + 0.15f)), minThinkMs)) {
                 break;
             }
 

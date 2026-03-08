@@ -3,7 +3,7 @@ project(chess_engine)
 
 set(CMAKE_OSX_ARCHITECTURES "arm64")
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native")
 
 add_executable(chess_magic main.cpp uci.cpp
         magicBoard.cpp

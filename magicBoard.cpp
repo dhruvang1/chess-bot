@@ -9,6 +9,7 @@
 #include "staticEvals.h"
 #include "magic_constants.h"
 #include "hash.cpp"
+#include "nnue.h"
 
 using namespace std;
 
@@ -67,6 +68,8 @@ public:
         castlingHashKeys[2] = hashHelper.blackShortCastle;
         castlingHashKeys[3] = hashHelper.blackLongCastle;
 
+        loadNNUE("nnue/quantised.bin");
+
         initPieceValues();
         initEvalMap();
         initGamePhaseTable();
@@ -86,6 +89,10 @@ public:
         whitePawns = whiteKnights = whiteBishops = whiteRooks = whiteQueens = whiteKing = 0;
         blackPawns = blackKnights = blackBishops = blackRooks = blackQueens = blackKing = 0;
         allWhite = allBlack = occupied = 0;
+        if (nnueLoaded) {
+            memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+            memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        }
         for (int sq = 0; sq < 64; sq++) board[sq] = ' ';
         prevMoves.clear();
         hashHistory.clear();
@@ -200,7 +207,6 @@ public:
             egEval,
             gamePhase
         };
-
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
         // reset en-passant hash
@@ -336,6 +342,53 @@ public:
         const int from = ::fromSq(info.move);
         const int to = ::toSq(info.move);
 
+        // Reverse accumulator updates before board state changes (we need current board[] to read piece types)
+        if (nnueLoaded) {
+            int wi, bi;
+            if (isPromoMove(info.move)) {
+                // makeMove did: remove pawn@from, [remove capture@to], add promotedPiece@to
+                // reverse:      add pawn@from,   [add capture@to],     remove promotedPiece@to
+                char pawn = (turn == WHITE) ? 'P' : 'p';
+                char promotedPiece = board[to];
+                getFeatureIndices(promotedPiece, to, wi, bi);
+                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                getFeatureIndices(pawn, from, wi, bi);
+                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                if (info.capturedPiece != ' ') {
+                    getFeatureIndices(info.capturedPiece, to, wi, bi);
+                    accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                }
+            } else if (isKing(board[to]) && abs(from - to) == 2) {
+                // Castling: reverse king move and rook move
+                char king = board[to];
+                getFeatureIndices(king, to, wi, bi);
+                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                getFeatureIndices(king, from, wi, bi);
+                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                int rookFrom, rookTo;
+                if (to == from + 2) { rookFrom = from + 3; rookTo = from + 1; }
+                else                { rookFrom = from - 4; rookTo = from - 1; }
+                char rook = board[rookTo];
+                getFeatureIndices(rook, rookTo, wi, bi);
+                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                getFeatureIndices(rook, rookFrom, wi, bi);
+                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+            } else {
+                // Normal move (including en-passant)
+                // makeMove did: [remove capture@capturedSq], move movedPiece from->to
+                // reverse:      [add capture@capturedSq],    move movedPiece to->from
+                char movedPiece = board[to];
+                getFeatureIndices(movedPiece, to, wi, bi);
+                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                getFeatureIndices(movedPiece, from, wi, bi);
+                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                if (info.capturedPiece != ' ') {
+                    getFeatureIndices(info.capturedPiece, info.capturedSq, wi, bi);
+                    accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                }
+            }
+        }
+
         if (isPromoMove(info.move)) {
             // Promotion: remove promoted piece, restore pawn
             char promotedPiece = board[to];
@@ -457,6 +510,14 @@ public:
 
     int getBoardEval() {
         if (evalCalculated) {
+            return eval;
+        }
+
+        if (nnueLoaded) {
+            bool stmWhite = (turn == WHITE);
+            eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
+                               stmWhite ? blackAcc : whiteAcc);
+            evalCalculated = true;
             return eval;
         }
 
@@ -811,21 +872,45 @@ private:
     bool evalCalculated = false;
     int eval = 0;
 
+    int16_t whiteAcc[NNUE_HIDDEN]{};  // accumulator from white's perspective
+    int16_t blackAcc[NNUE_HIDDEN]{};  // accumulator from black's perspective
+
     inline void addPieceEval(char piece, int sq) {
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase += gamePhaseTable[(int)piece];
+        if (nnueLoaded) {
+            int wi, bi;
+            getFeatureIndices(piece, sq, wi, bi);
+            accAdd(whiteAcc, wi);
+            accAdd(blackAcc, bi);
+        }
     }
 
     inline void removePieceEval(char piece, int sq) {
         mgEval -= pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval -= pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase -= gamePhaseTable[(int)piece];
+        if (nnueLoaded) {
+            int wi, bi;
+            getFeatureIndices(piece, sq, wi, bi);
+            accSub(whiteAcc, wi);
+            accSub(blackAcc, bi);
+        }
     }
 
     inline void movePieceEval(char piece, int fromSq, int toSq) {
         mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
+        if (nnueLoaded) {
+            int wi, bi;
+            getFeatureIndices(piece, fromSq, wi, bi);
+            accSub(whiteAcc, wi);
+            accSub(blackAcc, bi);
+            getFeatureIndices(piece, toSq, wi, bi);
+            accAdd(whiteAcc, wi);
+            accAdd(blackAcc, bi);
+        }
     }
 
     int evalTable[256][2][64]{};
@@ -908,12 +993,22 @@ private:
         mgEval = 0;
         egEval = 0;
         gamePhase = 0;
+        if (nnueLoaded) {
+            memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+            memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        }
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
                 mgEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][0][sq];
                 egEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][1][sq];
                 gamePhase += gamePhaseTable[(int)board[sq]];
+                if (nnueLoaded) {
+                    int wi, bi;
+                    getFeatureIndices(board[sq], sq, wi, bi);
+                    accAdd(whiteAcc, wi);
+                    accAdd(blackAcc, bi);
+                }
             }
         }
         boardHash ^= hashHelper.whiteShortCastle;
