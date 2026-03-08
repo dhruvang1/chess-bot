@@ -1,8 +1,11 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <sstream>
 #include <vector>
 #include <array>
+#include <chrono>
+#include <unistd.h>
 #include "search.cpp"
 
 using namespace std;
@@ -13,6 +16,11 @@ class Uci {
     BoardType board;
     Search search;
     int moves = 0;
+    bool fromFen = false;
+    bool datagen = false;
+    ofstream datagenFile;
+    int gameCount = 0;
+    string openingFen;
     static inline vector<string> openingsWhite{"e2e4", "d2d4", "c2c4"};
     static inline unordered_map<string, vector<string>> openingsBlack;
 
@@ -32,8 +40,13 @@ class Uci {
     }
 
     public:
-    Uci() {
+    Uci(bool datagen = false) : datagen(datagen) {
         srand(time(NULL));
+        if (datagen) {
+            auto ts = chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count();
+            string filename = "datagen_" + to_string(ts) + "_" + to_string(getpid()) + ".txt";
+            datagenFile.open(filename, ios::app);
+        }
 
         openingsBlack["e2e4"] = vector<string>{"e7e5", "c7c5"};
         openingsBlack["d2d4"] = vector<string>{"d7d5"};
@@ -61,20 +74,58 @@ class Uci {
             board = BoardType();
             search = Search();
             moves = 0;
+            fromFen = false;
+            openingFen = "";
+            if (datagen) {
+                gameCount++;
+                datagenFile << "GAME " << gameCount << "\n";
+                datagenFile.flush();
+            }
         } else if(tokens[0] == "position") {
-            // debug condition to process new moves
-            if(tokens[1] != "startpos") {
-               for(int i=1;i<tokens.size(); i++) {
-                   if (tokens[i] == "null") {
-                       board.processNullMove();
-                   } else{
-                       board.processMove(tokens[i]);
-                   }
-                   moves++;
-               }
-            } else if (tokens.size() > 3) {
-                // compare positions and process the new move
-                for(int i = moves + 3; i < tokens.size() ; i++) {
+            if (tokens[1] == "fen") {
+                fromFen = true;
+                // collect FEN fields (up to 6 tokens) then optional "moves"
+                int movesIdx = tokens.size();
+                for (int i = 2; i < (int)tokens.size(); i++) {
+                    if (tokens[i] == "moves") { movesIdx = i; break; }
+                }
+                string fenStr;
+                for (int i = 2; i < movesIdx; i++) {
+                    if (i > 2) fenStr += ' ';
+                    fenStr += tokens[i];
+                }
+                board.setupFromFen(fenStr);
+                moves = 0;
+                if (datagen && openingFen.empty()) {
+                    openingFen = fenStr;
+                    datagenFile << "OPENING " << fenStr << "\n";
+                    datagenFile.flush();
+                }
+                for (int i = movesIdx + 1; i < (int)tokens.size(); i++) {
+                    if (tokens[i] == "null") {
+                        board.processNullMove();
+                    } else {
+                        board.processMove(tokens[i]);
+                    }
+                    moves++;
+                }
+            } else if (tokens[1] == "startpos") {
+                fromFen = false;
+                if (tokens.size() > 3) {
+                    // compare positions and process the new move
+                    for(int i = moves + 3; i < (int)tokens.size() ; i++) {
+                        if (tokens[i] == "null") {
+                            board.processNullMove();
+                        } else{
+                            board.processMove(tokens[i]);
+                        }
+                        moves++;
+                    }
+                }
+            } else {
+                // debug condition to process new moves
+                fromFen = true;
+                for(int i=1;i<(int)tokens.size(); i++) {
                     if (tokens[i] == "null") {
                         board.processNullMove();
                     } else{
@@ -96,22 +147,15 @@ class Uci {
                 int whiteInc = 0;
                 int blackInc = 0;
 
-                if (tokens.size() > 2 && tokens[1] == "wtime") {
-                    whiteTime = stoi(tokens[2]);
+                for (int i = 1; i + 1 < (int)tokens.size(); i++) {
+                    if      (tokens[i] == "wtime") whiteTime = stoi(tokens[++i]);
+                    else if (tokens[i] == "btime") blackTime = stoi(tokens[++i]);
+                    else if (tokens[i] == "winc")  whiteInc  = stoi(tokens[++i]);
+                    else if (tokens[i] == "binc")  blackInc  = stoi(tokens[++i]);
                 }
-                if (tokens.size() > 4 && tokens[3] == "btime") {
-                    blackTime = stoi(tokens[4]);
-                }
-                if (tokens.size() > 6 && tokens[5] == "winc") {
-                    whiteInc = stoi(tokens[6]);
-                }
-                if (tokens.size() > 8 && tokens[7] == "binc") {
-                    blackInc = stoi(tokens[8]);
-                }
-
-                if (!board.hasMoves()) {
+                if (!fromFen && !board.hasMoves()) {
                     bestMove = openingsWhite[rand() % openingsWhite.size()];
-                } else if (board.moveCount() == 1) {
+                } else if (!fromFen && board.moveCount() == 1) {
                     string firstMove = board.getMoveStr(0);
                     if (openingsBlack.find(firstMove) != openingsBlack.end()) {
                         bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
@@ -121,6 +165,14 @@ class Uci {
                 } else {
                     bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
                 }
+            }
+
+            if (datagen) {
+                // eval is from side-to-move perspective, convert to white's perspective
+                int eval = search.lastEval;
+                if (board.turn == BoardType::BLACK) eval = -eval;
+                datagenFile << board.getFen() << " | " << eval << "\n";
+                datagenFile.flush();
             }
 
             board.processMove(bestMove);
@@ -164,6 +216,8 @@ class Uci {
             }
 
             cout << endl;
+        } else if (tokens[0] == "fen") {
+            cout << board.getFen() << endl;
         } else if (tokens[0] == "print") {
             cout << board.printBoard() << endl;
         }

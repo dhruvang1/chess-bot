@@ -245,10 +245,12 @@ class Search {
         }
 
         logSearchResult(depthEvaluated, bestMoveEval, bestMoveLine);
+        lastEval = bestMoveEval;
         return moveToUci(bestMove);
     }
 
     public:
+    int lastEval = 0;
 
     Search() {
 //        ofile.open("log.txt");

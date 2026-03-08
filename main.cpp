@@ -4,8 +4,9 @@
 
 using namespace std;
 
-int main() {
-    Uci uci;
+int main(int argc, char* argv[]) {
+    bool datagen = argc > 1 && string(argv[1]) == "datagen";
+    Uci uci(datagen);
     while(true) {
         string msg;
         getline(cin, msg);

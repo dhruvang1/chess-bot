@@ -1,4 +1,5 @@
 #include <string>
+#include <sstream>
 #include <vector>
 #include <cstdint>
 #include <format>
@@ -78,6 +79,92 @@ public:
         initBishopMasks();
         initRookMasks();
         initSliderTables();
+    }
+
+    void setupFromFen(const string& fen) {
+        // Reset all state
+        whitePawns = whiteKnights = whiteBishops = whiteRooks = whiteQueens = whiteKing = 0;
+        blackPawns = blackKnights = blackBishops = blackRooks = blackQueens = blackKing = 0;
+        allWhite = allBlack = occupied = 0;
+        for (int sq = 0; sq < 64; sq++) board[sq] = ' ';
+        prevMoves.clear();
+        hashHistory.clear();
+        boardHash = 0;
+        mgEval = 0;
+        egEval = 0;
+        gamePhase = 0;
+        evalCalculated = false;
+        enPassantCol = -1;
+        castlingRights = 0;
+
+        stringstream ss(fen);
+        string placement, activeColor, castling, enPassant;
+        ss >> placement >> activeColor >> castling >> enPassant;
+
+        // Parse piece placement (FEN starts at rank 8 = row 7, file a = col 0)
+        int rank = 7, col = 0;
+        for (char c : placement) {
+            if (c == '/') {
+                rank--;
+                col = 0;
+            } else if (c >= '1' && c <= '8') {
+                col += (c - '0');
+            } else {
+                int sq = toSq(rank, col);
+                board[sq] = c;
+                uint64_t bb = sqToBB(sq);
+                switch (c) {
+                    case 'P': whitePawns   |= bb; break;
+                    case 'N': whiteKnights |= bb; break;
+                    case 'B': whiteBishops |= bb; break;
+                    case 'R': whiteRooks   |= bb; break;
+                    case 'Q': whiteQueens  |= bb; break;
+                    case 'K': whiteKing    |= bb; break;
+                    case 'p': blackPawns   |= bb; break;
+                    case 'n': blackKnights |= bb; break;
+                    case 'b': blackBishops |= bb; break;
+                    case 'r': blackRooks   |= bb; break;
+                    case 'q': blackQueens  |= bb; break;
+                    case 'k': blackKing    |= bb; break;
+                }
+                col++;
+            }
+        }
+
+        allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
+        allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
+        occupied = allWhite | allBlack;
+
+        turn = (activeColor == "b") ? BLACK : WHITE;
+
+        for (char c : castling) {
+            switch (c) {
+                case 'K': castlingRights |= WHITE_OO;  break;
+                case 'Q': castlingRights |= WHITE_OOO; break;
+                case 'k': castlingRights |= BLACK_OO;  break;
+                case 'q': castlingRights |= BLACK_OOO; break;
+            }
+        }
+
+        if (enPassant != "-") {
+            enPassantCol = enPassant[0] - 'a';
+        }
+
+        // Build hash
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
+                addPieceEval(board[sq], sq);
+            }
+        }
+        if (castlingRights & WHITE_OO)  boardHash ^= castlingHashKeys[0];
+        if (castlingRights & WHITE_OOO) boardHash ^= castlingHashKeys[1];
+        if (castlingRights & BLACK_OO)  boardHash ^= castlingHashKeys[2];
+        if (castlingRights & BLACK_OOO) boardHash ^= castlingHashKeys[3];
+        if (turn == BLACK) boardHash ^= hashHelper.getTurnHash();
+        if (enPassantCol != -1) boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
+
+        hashHistory[boardHash]++;
     }
 
     void logMembers() {
@@ -576,6 +663,52 @@ public:
 
     uint64_t getHash() const {
         return boardHash;
+    }
+
+    string getFen() const {
+        string fen;
+
+        // Piece placement (rank 8 down to rank 1)
+        for (int rank = 7; rank >= 0; rank--) {
+            int empty = 0;
+            for (int col = 0; col < 8; col++) {
+                char p = board[toSq(rank, col)];
+                if (p == ' ') {
+                    empty++;
+                } else {
+                    if (empty > 0) { fen += char('0' + empty); empty = 0; }
+                    fen += p;
+                }
+            }
+            if (empty > 0) fen += char('0' + empty);
+            if (rank > 0) fen += '/';
+        }
+
+        // Active color
+        fen += (turn == WHITE) ? " w " : " b ";
+
+        // Castling
+        string castling;
+        if (castlingRights & WHITE_OO)  castling += 'K';
+        if (castlingRights & WHITE_OOO) castling += 'Q';
+        if (castlingRights & BLACK_OO)  castling += 'k';
+        if (castlingRights & BLACK_OOO) castling += 'q';
+        fen += castling.empty() ? "-" : castling;
+
+        // En passant
+        if (enPassantCol == -1) {
+            fen += " -";
+        } else {
+            int epRank = (turn == BLACK) ? 2 : 5;
+            fen += ' ';
+            fen += char('a' + enPassantCol);
+            fen += char('1' + epRank);
+        }
+
+        // Halfmove clock and fullmove number (not tracked, use defaults)
+        fen += " 0 " + to_string(moveCount() / 2 + 1);
+
+        return fen;
     }
 
     size_t moveCount() const { return prevMoves.size(); }
