@@ -221,6 +221,13 @@ class Uci {
             cout << board.getFen() << endl;
         } else if (tokens[0] == "print") {
             cout << board.printBoard() << endl;
+        } else if (tokens[0] == "lmr") {
+            for (int d = 1; d < 64; d++) {
+                for (int m = 1; m < 64; m++) {
+                    cout << lmrTable[d][m] << ",";
+                }
+                cout << "\n";
+            }
         }
 
         if(isManual()) {
