@@ -68,6 +68,7 @@ class Search {
     int START_DEPTH = 1;
     int BASE_NULL_MOVE_REDUCTION = 2;
     high_resolution_clock::time_point startTime;
+    bool shouldStop = false;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
     float earlyExitFraction{};
@@ -96,9 +97,13 @@ class Search {
     }
 
     inline bool shouldQuit() {
+        if (shouldStop) {
+            return true;
+        }
         auto currentTime = high_resolution_clock::now();
         auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
-        return elapsedTime >= hardTimeLimitMs;
+        shouldStop = elapsedTime >= hardTimeLimitMs;
+        return shouldStop;
     }
 
     string pvToString(int ply = 0) {
@@ -128,6 +133,9 @@ class Search {
         orderedMovesLastRound.clear();
         initKillers();
         startTime = high_resolution_clock::now();
+        softTimeLimitMs = LONG_MAX;
+        hardTimeLimitMs = LONG_MAX;
+        shouldStop = false;
     }
 
     void computeTimeLimits(int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
@@ -287,8 +295,6 @@ class Search {
 
     string getBestMove(BoardType& currentBoard, int maxDepth) {
         initSearch(currentBoard);
-        softTimeLimitMs = LONG_MAX;
-        hardTimeLimitMs = LONG_MAX;
         return runSearch(maxDepth);
     }
 
@@ -310,6 +316,8 @@ class Search {
     int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ') {
         nodes++;
         pvLength[ply] = 0;
+
+        if (shouldStop) return 0;
 
         if (nullAllowed && board->isPositionRepeated()) {
             // give three-fold repetition the eval 0, so we go for it in worse positions and avoid it in good positions.
@@ -514,6 +522,8 @@ class Search {
     int quiescenceSearch(int alpha, int beta, int depth, int ply) {
         qNodes++;
         pvLength[ply] = 0;
+
+        if (shouldStop) return 0;
 
         if (!board->isKingPresent()) {
             return -(BoardType::checkmateEval - ply);
