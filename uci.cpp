@@ -67,7 +67,7 @@ class Uci {
         else if (msg == "uci") {
             cout << "id name simple-bot" << endl;
             cout << "id author Dhruvang" << endl;
-            cout << "info string NNUE " << (nnueLoaded ? "enabled" : "disabled (using HCE)") << endl;
+            cout << "info string NNUE HalfKP " << (nnueLoaded ? "enabled" : "disabled (using HCE)") << endl;
             cout << "uciok" << endl;
         } else if (msg == "isready") {
             cout << "readyok" << endl;

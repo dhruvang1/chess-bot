@@ -30,6 +30,8 @@ public:
         int mgEval;
         int egEval;
         int gamePhase;
+        int nnueWksq;  // king squares at start of makeMove (before bitboard mutations)
+        int nnueBksq;
     };
 
     Color turn = WHITE;
@@ -157,7 +159,13 @@ public:
             enPassantCol = enPassant[0] - 'a';
         }
 
-        // Build hash
+        // Build hash — all pieces placed, king squares valid
+        nnueWksq = wksq();
+        nnueBksq = bksq();
+        if (nnueLoaded) {
+            memcpy(whiteAcc, nnueWeights.l0b, sizeof(int16_t) * NNUE_HIDDEN);
+            memcpy(blackAcc, nnueWeights.l0b, sizeof(int16_t) * NNUE_HIDDEN);
+        }
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
@@ -188,6 +196,10 @@ public:
         char movedPiece = board[currSq];
         char gonePiece = board[newSq];
 
+        // Capture king squares before any bitboard mutations — used by NNUE helpers
+        nnueWksq = wksq();
+        nnueBksq = bksq();
+
         if (!isPieceOfColor(turn, movedPiece)) {
             const string turn_value = turn == WHITE ? "WHITE" : "BLACK";
             throw std::invalid_argument("Moving a piece of wrong color (or empty piece), move: " + moveToUci(move) + " movedPiece: " + movedPiece + " turn: " + turn_value);
@@ -205,7 +217,9 @@ public:
             newSq,  // default: captured piece is on destination
             mgEval,
             egEval,
-            gamePhase
+            gamePhase,
+            nnueWksq,
+            nnueBksq
         };
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
@@ -317,6 +331,14 @@ public:
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
+
+        // King move: refresh both accumulators — mover's bucket changed, opponent's
+        // incremental update used pre-move king square which is now stale
+        if (nnueLoaded && isKing(movedPiece)) {
+            refreshAccumulator(WHITE);
+            refreshAccumulator(BLACK);
+        }
+
         flipTurn();
 
         hashHistory[boardHash]++;
@@ -343,47 +365,35 @@ public:
         const int to = ::toSq(info.move);
 
         // Reverse accumulator updates before board state changes (we need current board[] to read piece types)
-        if (nnueLoaded) {
+        // King moves are handled with a full refresh AFTER board restore (below).
+        const bool undoIsKingMove = isKing(board[to]);
+        if (nnueLoaded && !undoIsKingMove && info.move != MOVE_NONE) {
             int wi, bi;
+            int wk = info.nnueWksq, bk = info.nnueBksq;
             if (isPromoMove(info.move)) {
                 // makeMove did: remove pawn@from, [remove capture@to], add promotedPiece@to
                 // reverse:      add pawn@from,   [add capture@to],     remove promotedPiece@to
                 char pawn = (turn == WHITE) ? 'P' : 'p';
                 char promotedPiece = board[to];
-                getFeatureIndices(promotedPiece, to, wi, bi);
+                getFeatureIndices(promotedPiece, to, wk, bk, wi, bi);
                 accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(pawn, from, wi, bi);
+                getFeatureIndices(pawn, from, wk, bk, wi, bi);
                 accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, to, wi, bi);
+                    getFeatureIndices(info.capturedPiece, to, wk, bk, wi, bi);
                     accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 }
-            } else if (isKing(board[to]) && abs(from - to) == 2) {
-                // Castling: reverse king move and rook move
-                char king = board[to];
-                getFeatureIndices(king, to, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(king, from, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                int rookFrom, rookTo;
-                if (to == from + 2) { rookFrom = from + 3; rookTo = from + 1; }
-                else                { rookFrom = from - 4; rookTo = from - 1; }
-                char rook = board[rookTo];
-                getFeatureIndices(rook, rookTo, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(rook, rookFrom, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
             } else {
                 // Normal move (including en-passant)
                 // makeMove did: [remove capture@capturedSq], move movedPiece from->to
                 // reverse:      [add capture@capturedSq],    move movedPiece to->from
                 char movedPiece = board[to];
-                getFeatureIndices(movedPiece, to, wi, bi);
+                getFeatureIndices(movedPiece, to, wk, bk, wi, bi);
                 accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(movedPiece, from, wi, bi);
+                getFeatureIndices(movedPiece, from, wk, bk, wi, bi);
                 accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, info.capturedSq, wi, bi);
+                    getFeatureIndices(info.capturedPiece, info.capturedSq, wk, bk, wi, bi);
                     accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 }
             }
@@ -449,11 +459,18 @@ public:
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
+
+        // King move: refresh both accumulators — opponent's acc was incrementally updated
+        // during makeMove and must be fully recomputed now that king is back at its original square
+        if (nnueLoaded && undoIsKingMove) {
+            refreshAccumulator(WHITE);
+            refreshAccumulator(BLACK);
+        }
     }
 
     void processNullMove() {
         evalCalculated = false;
-        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase};
+        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase, nnueWksq, nnueBksq};
         prevMoves.push_back(std::move(info));
         boardHash ^= hashHelper.getTurnHash();
         maybeResetEnPassantHash();
@@ -515,8 +532,32 @@ public:
 
         if (nnueLoaded) {
             bool stmWhite = (turn == WHITE);
-            eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
-                               stmWhite ? blackAcc : whiteAcc);
+            // Validate incremental accumulators against full recompute
+            int16_t wChk[NNUE_HIDDEN], bChk[NNUE_HIDDEN];
+            memcpy(wChk, nnueWeights.l0b, sizeof(wChk));
+            memcpy(bChk, nnueWeights.l0b, sizeof(bChk));
+            int wk = wksq(), bk = bksq();
+            for (int sq = 0; sq < 64; sq++) {
+                if (board[sq] != ' ') {
+                    int wi, bi;
+                    getFeatureIndices(board[sq], sq, wk, bk, wi, bi);
+                    accAdd(wChk, wi);
+                    accAdd(bChk, bi);
+                }
+            }
+            for (int i = 0; i < NNUE_HIDDEN; i++) {
+                if (whiteAcc[i] != wChk[i] || blackAcc[i] != bChk[i]) {
+                    std::cerr << "ACC MISMATCH neuron " << i
+                              << " wInc=" << whiteAcc[i] << " wFull=" << wChk[i]
+                              << " bInc=" << blackAcc[i] << " bFull=" << bChk[i]
+                              << " turn=" << (turn == WHITE ? "W" : "B") << std::endl;
+                    // Fix accumulators
+                    memcpy(whiteAcc, wChk, sizeof(wChk));
+                    memcpy(blackAcc, bChk, sizeof(bChk));
+                    break;
+                }
+            }
+            eval = nnueForward(stmWhite ? whiteAcc : blackAcc, stmWhite ? blackAcc : whiteAcc);
             evalCalculated = true;
             return eval;
         }
@@ -875,13 +916,33 @@ private:
     int16_t whiteAcc[NNUE_HIDDEN]{};  // accumulator from white's perspective
     int16_t blackAcc[NNUE_HIDDEN]{};  // accumulator from black's perspective
 
+    int nnueWksq = 0;  // cached king squares — set before bitboard mutations
+    int nnueBksq = 0;
+
+    inline int wksq() const { return __builtin_ctzll(whiteKing); }
+    inline int bksq() const { return __builtin_ctzll(blackKing); }
+
+    void refreshAccumulator(Color c) {
+        int16_t* acc = (c == WHITE) ? whiteAcc : blackAcc;
+        memcpy(acc, nnueWeights.l0b, sizeof(int16_t) * NNUE_HIDDEN);
+        int wk = wksq(), bk = bksq();
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                int wi, bi;
+                getFeatureIndices(board[sq], sq, wk, bk, wi, bi);
+                if (c == WHITE) accAdd(acc, wi);
+                else            accAdd(acc, bi);
+            }
+        }
+    }
+
     inline void addPieceEval(char piece, int sq) {
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase += gamePhaseTable[(int)piece];
         if (nnueLoaded) {
             int wi, bi;
-            getFeatureIndices(piece, sq, wi, bi);
+            getFeatureIndices(piece, sq, nnueWksq, nnueBksq, wi, bi);
             accAdd(whiteAcc, wi);
             accAdd(blackAcc, bi);
         }
@@ -893,7 +954,7 @@ private:
         gamePhase -= gamePhaseTable[(int)piece];
         if (nnueLoaded) {
             int wi, bi;
-            getFeatureIndices(piece, sq, wi, bi);
+            getFeatureIndices(piece, sq, nnueWksq, nnueBksq, wi, bi);
             accSub(whiteAcc, wi);
             accSub(blackAcc, bi);
         }
@@ -904,10 +965,10 @@ private:
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
         if (nnueLoaded) {
             int wi, bi;
-            getFeatureIndices(piece, fromSq, wi, bi);
+            getFeatureIndices(piece, fromSq, nnueWksq, nnueBksq, wi, bi);
             accSub(whiteAcc, wi);
             accSub(blackAcc, bi);
-            getFeatureIndices(piece, toSq, wi, bi);
+            getFeatureIndices(piece, toSq, nnueWksq, nnueBksq, wi, bi);
             accAdd(whiteAcc, wi);
             accAdd(blackAcc, bi);
         }
@@ -1005,7 +1066,7 @@ private:
                 gamePhase += gamePhaseTable[(int)board[sq]];
                 if (nnueLoaded) {
                     int wi, bi;
-                    getFeatureIndices(board[sq], sq, wi, bi);
+                    getFeatureIndices(board[sq], sq, wksq(), bksq(), wi, bi);
                     accAdd(whiteAcc, wi);
                     accAdd(blackAcc, bi);
                 }

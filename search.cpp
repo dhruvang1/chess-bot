@@ -32,8 +32,8 @@ static void initLMR() {
 }
 
 class Search {
-    static const int POSITIVE_NUM = 1 << 30;
-    static const int NEGATIVE_NUM = - POSITIVE_NUM;
+    static constexpr int POSITIVE_NUM = 1 << 30;
+    static constexpr int NEGATIVE_NUM = - POSITIVE_NUM;
     static const int MAX_PLY = 128;
 
     BoardType* board;
