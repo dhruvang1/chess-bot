@@ -68,8 +68,6 @@ public:
         castlingHashKeys[2] = hashHelper.blackShortCastle;
         castlingHashKeys[3] = hashHelper.blackLongCastle;
 
-        loadNNUE("nnue/quantised.bin");
-
         initPieceValues();
         initEvalMap();
         initGamePhaseTable();

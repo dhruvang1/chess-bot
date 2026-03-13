@@ -274,6 +274,7 @@ class Search {
 
     public:
     int lastEval = 0;
+    int maxSearchDepth = 64;
 
     Search() {
 //        ofile.open("log.txt");
@@ -302,7 +303,7 @@ class Search {
         initSearch(currentBoard);
         computeTimeLimits(whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
 
-        string bestMove = runSearch(29);
+        string bestMove = runSearch(maxSearchDepth);
 
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);

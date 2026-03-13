@@ -68,23 +68,25 @@ inline void accSub(int16_t* acc, int featureIdx) {
 // Runs output layer from pre-built accumulators. Returns eval from STM's perspective.
 // Loop is written to be auto-vectorizable with NEON/AVX2.
 inline int nnueForward(const int16_t* __restrict__ stm_acc, const int16_t* __restrict__ ntm_acc) {
-    int32_t output = 0;
+    // Split into two accumulators (256 terms each) to reduce overflow risk.
+    // Max per half: 256 * 255*255*64 = ~1.06B < INT32_MAX
+    int32_t output1 = 0, output2 = 0;
     const int16_t* w = nnueWeights.l1w;
 
     for (int i = 0; i < NNUE_HIDDEN; i++) {
         int32_t v = stm_acc[i];
         if (v < 0) v = 0;
         if (v > NNUE_QA) v = NNUE_QA;
-        output += v * v * w[i];
+        output1 += v * v * w[i];
     }
     for (int i = 0; i < NNUE_HIDDEN; i++) {
         int32_t v = ntm_acc[i];
         if (v < 0) v = 0;
         if (v > NNUE_QA) v = NNUE_QA;
-        output += v * v * w[NNUE_HIDDEN + i];
+        output2 += v * v * w[NNUE_HIDDEN + i];
     }
 
-    output /= NNUE_QA;
+    int32_t output = output1 / NNUE_QA + output2 / NNUE_QA;
     output += nnueWeights.l1b;
     output = output * NNUE_SCALE / (NNUE_QA * NNUE_QB);
     return (int)output;

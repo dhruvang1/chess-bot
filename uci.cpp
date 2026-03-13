@@ -15,6 +15,7 @@ class Uci {
     private:
     BoardType board;
     Search search;
+    int maxDepth = 64;
     int moves = 0;
     bool fromFen = false;
     bool datagen = false;
@@ -23,6 +24,14 @@ class Uci {
     string openingFen;
     static inline vector<string> openingsWhite{"e2e4", "d2d4", "c2c4"};
     static inline unordered_map<string, vector<string>> openingsBlack;
+
+    void initNnue(const string& nnuePath) {
+        if (nnuePath.empty()) return; // no path → use HCE
+        if (!loadNNUE(nnuePath)) {
+            cerr << "Error: NNUE file not found or invalid: " << nnuePath << endl;
+            exit(1);
+        }
+    }
 
     vector<string> tokenize(const string &msg) {
         stringstream ss(msg);
@@ -40,7 +49,8 @@ class Uci {
     }
 
     public:
-    Uci(bool datagen = false) : datagen(datagen) {
+    Uci(bool datagen = false, const string& nnuePath = "") : datagen(datagen) {
+        initNnue(nnuePath);
         srand(time(NULL));
         if (datagen) {
             auto ts = chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count();
@@ -67,13 +77,35 @@ class Uci {
         else if (msg == "uci") {
             cout << "id name simple-bot" << endl;
             cout << "id author Dhruvang" << endl;
-            cout << "info string NNUE " << (nnueLoaded ? "enabled" : "disabled (using HCE)") << endl;
+            cout << "option name MaxDepth type spin default 64 min 1 max 64" << endl;
+            cout << "option name NNUEPath type string default <empty>" << endl;
             cout << "uciok" << endl;
         } else if (msg == "isready") {
             cout << "readyok" << endl;
+        } else if (tokens[0] == "setoption") {
+            // setoption name <Name> value <Value>
+            if (tokens.size() >= 5 && tokens[1] == "name" && tokens[3] == "value") {
+                if (tokens[2] == "MaxDepth") {
+                    maxDepth = stoi(tokens[4]);
+                    search.maxSearchDepth = maxDepth;
+                } else if (tokens[2] == "NNUEPath") {
+                    // join remaining tokens to support paths with spaces
+                    string path;
+                    for (int i = 4; i < (int)tokens.size(); i++) {
+                        if (i > 4) path += " ";
+                        path += tokens[i];
+                    }
+                    if (!loadNNUE(path)) {
+                        cout << "info string NNUE error: file not found: " << path << endl;
+                    } else {
+                        cout << "info string NNUE enabled: " << path << endl;
+                    }
+                }
+            }
         } else if (msg == "ucinewgame") {
             board = BoardType();
             search = Search();
+            search.maxSearchDepth = maxDepth;
             moves = 0;
             fromFen = false;
             openingFen = "";

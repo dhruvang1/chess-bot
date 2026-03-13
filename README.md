@@ -31,13 +31,16 @@ A chess engine written in C++20 with UCI protocol support. Estimated ~2100 Elo. 
 ## Evaluation
 
 Primary: **NNUE** (768→256→1, SCReLU activation, dual perspective accumulators)
-- Feature set: Chess768 — 6 piece types × 2 colors × 64 squares
+- Feature set: Chess768 — 6 piece types × 2 colors × 64 squares = 768 binary inputs
+- Dual perspective: separate STM and NSTM accumulators concatenated (effectively 512-wide hidden layer)
+- Activation: SCReLU — `clamp(x, 0, QA)² × weight`, computed with int32 arithmetic
 - Quantization: QA=255, QB=64, Scale=400
-- Network: `nnue/quantised.bin`
+- Inference is auto-vectorized with ARM NEON (SIMD) — ~971K NPS on Apple M-series
 - Accumulators updated incrementally on make; reversed incrementally on undo (no copy overhead)
+- Network loaded via `setoption name NNUEPath value <path>`
 
 Fallback HCE (when NNUE not loaded):
-- Tapered eval blending middlegame and endgame piece-square tables
+- Tapered eval blending middlegame and endgame piece-square tables (PeSTO)
 - Bishop pair bonus, pawn structure, king safety, game phase detection
 
 ## Build

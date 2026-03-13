@@ -5,8 +5,17 @@
 using namespace std;
 
 int main(int argc, char* argv[]) {
-    bool datagen = argc > 1 && string(argv[1]) == "datagen";
-    Uci uci(datagen);
+    bool datagen = false;
+    string nnuePath;
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i];
+        if (arg == "datagen") {
+            datagen = true;
+        } else if (arg == "--nnue" && i + 1 < argc) {
+            nnuePath = argv[++i];
+        }
+    }
+    Uci uci(datagen, nnuePath);
     while(true) {
         string msg;
         getline(cin, msg);
