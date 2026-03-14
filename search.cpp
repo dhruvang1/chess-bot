@@ -198,9 +198,10 @@ class Search {
         int depthEvaluated = 0;
         uint16_t lastBestMove = MOVE_NONE;
         int stabilityCount = 0;
+        int prevEval = 0;
 
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
-            // don't start a new iteration past the soft time limit
+            // don't start a new iteration past the soft limit
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
             if (elapsedTime >= softTimeLimitMs) {
@@ -238,6 +239,8 @@ class Search {
                 break;
             }
 
+            int evalShift = abs(eval - prevEval);
+            prevEval = eval;
             depthEvaluated = depth;
             bestMoveLine = pvToString();
             bestMoveEval = eval;
@@ -251,14 +254,19 @@ class Search {
                 lastBestMove = bestMove;
             }
 
+            // eval instability: if eval is shifting a lot, extend soft limit up to 3x
+            // small shifts (< 10cp) → no extension; large shifts (> 50cp) → full 3x extension
+            float instabilityScale = 1.0f + min(2.0f, evalShift / 25.0f);
+            long effectiveSoftLimit = (long)(softTimeLimitMs * instabilityScale);
+
             auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
-            if (stabilityCount >= 15 && postSearchTime > (long)(softTimeLimitMs * earlyExitFraction) ) {
+            if (stabilityCount >= 15 && postSearchTime > (long)(effectiveSoftLimit * earlyExitFraction)) {
                 break;
             }
-            if (stabilityCount >= 7 && postSearchTime > max((long)(softTimeLimitMs * earlyExitFraction), minThinkMs)) {
+            if (stabilityCount >= 7 && postSearchTime > max((long)(effectiveSoftLimit * earlyExitFraction), minThinkMs)) {
                 break;
             }
-            if (stabilityCount >= 3 && postSearchTime > max((long)(softTimeLimitMs * (earlyExitFraction + 0.15f)), minThinkMs)) {
+            if (stabilityCount >= 3 && postSearchTime > max((long)(effectiveSoftLimit * (earlyExitFraction + 0.15f)), minThinkMs)) {
                 break;
             }
 
