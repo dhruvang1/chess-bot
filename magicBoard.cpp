@@ -511,15 +511,19 @@ public:
             return eval;
         }
 
-        if (nnueLoaded) {
-            bool stmWhite = (turn == WHITE);
-            eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
-                               stmWhite ? blackAcc : whiteAcc);
-            evalCalculated = true;
-            return eval;
+        if (!nnueLoaded) {
+            throw std::runtime_error("NNUE not loaded — set NNUEPath via setoption before searching");
         }
 
-        eval = 0;
+        bool stmWhite = (turn == WHITE);
+        eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
+                           stmWhite ? blackAcc : whiteAcc);
+        evalCalculated = true;
+        return eval;
+    }
+
+    int getHCEval() {
+        int hceEval = 0;
         int wpCounts[8]{};  // white pawns per file
         int bpCounts[8]{};  // black pawns per file
 
@@ -532,16 +536,16 @@ public:
         int gp = min(gamePhase, 24);
 
         // Tapered eval: blend incrementally maintained middlegame and endgame scores
-        eval += (gp * mgEval + (24 - gp) * egEval) / 24;
+        hceEval += (gp * mgEval + (24 - gp) * egEval) / 24;
 
         // Bishop pair: bonus scales from 5% to 30% of pawn value as pieces come off
         double bishopPairBonus = (gp * 0.05 + (24 - gp) * 0.3) / 24;
 
         if ((whiteBishops & lightSquareMask) && (whiteBishops & darkSquareMask)) {
-            eval += int(bishopPairBonus * pieceValue['P']);
+            hceEval += int(bishopPairBonus * pieceValue['P']);
         }
         if ((blackBishops & lightSquareMask) && (blackBishops & darkSquareMask)) {
-            eval += int(bishopPairBonus * pieceValue['p']);
+            hceEval += int(bishopPairBonus * pieceValue['p']);
         }
 
         // Pawn structure penalties scale up toward endgame
@@ -565,21 +569,21 @@ public:
             if (wpCounts[j] >= 1) {
                 bool isolated = (j == 0 || wpCounts[j-1] == 0) && (j == 7 || wpCounts[j+1] == 0);
                 if (isolated) {
-                    eval -= int(pieceValue['P'] * wpCounts[j] * isolatedPawnsPenalty);
-                    eval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
+                    hceEval -= int(pieceValue['P'] * wpCounts[j] * isolatedPawnsPenalty);
+                    hceEval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
                 } else {
-                    eval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledPawnsPenalty);
+                    hceEval -= int(pieceValue['P'] * (wpCounts[j] - 1) * doubledPawnsPenalty);
                 }
 
                 // Passed pawn: no enemy pawns ahead on same or adjacent files
                 for (int r = 6; r >= 1; r--) {
                     if (whitePawns & sqToBB(toSq(r, j))) {
                         if ((whitePassPawnMask[r][j] & blackPawns) == 0) {
-                            eval += int(passedPawnByRank[r] * passedPawnPhase);
+                            hceEval += int(passedPawnByRank[r] * passedPawnPhase);
                             // king-pawn proximity: reward our king near, enemy king far
                             int friendDist = max(abs(wkR - r), abs(wkC - j));
                             int enemyDist  = max(abs(bkR - r), abs(bkC - j));
-                            eval += proxWeight * (enemyDist - friendDist);
+                            hceEval += proxWeight * (enemyDist - friendDist);
                         }
                         break;
                     }
@@ -589,21 +593,21 @@ public:
             if (bpCounts[j] >= 1) {
                 bool isolated = (j == 0 || bpCounts[j-1] == 0) && (j == 7 || bpCounts[j+1] == 0);
                 if (isolated) {
-                    eval -= int(pieceValue['p'] * bpCounts[j] * isolatedPawnsPenalty);
-                    eval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
+                    hceEval -= int(pieceValue['p'] * bpCounts[j] * isolatedPawnsPenalty);
+                    hceEval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledIsolatedPawnsPenalty);
                 } else {
-                    eval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledPawnsPenalty);
+                    hceEval -= int(pieceValue['p'] * (bpCounts[j] - 1) * doubledPawnsPenalty);
                 }
 
                 // For black, row 1 = rank 2 (most advanced), so bonus = passedPawnByRank[7-r]
                 for (int r = 1; r <= 6; r++) {
                     if (blackPawns & sqToBB(toSq(r, j))) {
                         if ((blackPassPawnMask[r][j] & whitePawns) == 0) {
-                            eval -= int(passedPawnByRank[7 - r] * passedPawnPhase);
+                            hceEval -= int(passedPawnByRank[7 - r] * passedPawnPhase);
                             // king-pawn proximity: reward black's king near, white's king far
                             int friendDist = max(abs(bkR - r), abs(bkC - j));
                             int enemyDist  = max(abs(wkR - r), abs(wkC - j));
-                            eval -= proxWeight * (enemyDist - friendDist);
+                            hceEval -= proxWeight * (enemyDist - friendDist);
                         }
                         break;
                     }
@@ -616,39 +620,37 @@ public:
             int wkSq = __builtin_ctzll(whiteKing);
             int wkRow = rowOf(wkSq), wkCol = colOf(wkSq);
             if (wkRow == 0 && wkCol == 6) {  // kingside castle position
-                eval += int((__builtin_popcountll(whitePawns & 0x0000000000E000ULL)) * 0.15 * pieceValue['P']); // f2,g2,h2
-                eval += int((__builtin_popcountll(whitePawns & 0x00000000E00000ULL)) * 0.1 * pieceValue['P']);  // f3,g3,h3
+                hceEval += int((__builtin_popcountll(whitePawns & 0x0000000000E000ULL)) * 0.15 * pieceValue['P']); // f2,g2,h2
+                hceEval += int((__builtin_popcountll(whitePawns & 0x00000000E00000ULL)) * 0.1 * pieceValue['P']);  // f3,g3,h3
             } else if (wkRow == 0 && wkCol == 1) {  // queenside castle position
-                eval += int((__builtin_popcountll(whitePawns & 0x0000000000000700ULL)) * 0.15 * pieceValue['P']); // a2,b2,c2
-                eval += int((__builtin_popcountll(whitePawns & 0x0000000000070000ULL)) * 0.1 * pieceValue['P']);  // a3,b3,c3
+                hceEval += int((__builtin_popcountll(whitePawns & 0x0000000000000700ULL)) * 0.15 * pieceValue['P']); // a2,b2,c2
+                hceEval += int((__builtin_popcountll(whitePawns & 0x0000000000070000ULL)) * 0.1 * pieceValue['P']);  // a3,b3,c3
             }
 
             int bkSq = __builtin_ctzll(blackKing);
             int bkRow = rowOf(bkSq), bkCol = colOf(bkSq);
             if (bkRow == 7 && bkCol == 6) {
-                eval += int((__builtin_popcountll(blackPawns & 0x00E0000000000000ULL)) * 0.15 * pieceValue['p']); // f7,g7,h7
-                eval += int((__builtin_popcountll(blackPawns & 0x0000E00000000000ULL)) * 0.1 * pieceValue['p']);  // f6,g6,h6
+                hceEval += int((__builtin_popcountll(blackPawns & 0x00E0000000000000ULL)) * 0.15 * pieceValue['p']); // f7,g7,h7
+                hceEval += int((__builtin_popcountll(blackPawns & 0x0000E00000000000ULL)) * 0.1 * pieceValue['p']);  // f6,g6,h6
             } else if (bkRow == 7 && bkCol == 1) {
-                eval += int((__builtin_popcountll(blackPawns & 0x0007000000000000ULL)) * 0.15 * pieceValue['p']); // a7,b7,c7
-                eval += int((__builtin_popcountll(blackPawns & 0x0000070000000000ULL)) * 0.1 * pieceValue['p']);  // a6,b6,c6
+                hceEval += int((__builtin_popcountll(blackPawns & 0x0007000000000000ULL)) * 0.15 * pieceValue['p']); // a7,b7,c7
+                hceEval += int((__builtin_popcountll(blackPawns & 0x0000070000000000ULL)) * 0.1 * pieceValue['p']);  // a6,b6,c6
             }
         }
 
         // Minor piece mobility: scales down toward endgame
         int minorDiff = getMinorMobility(WHITE) - getMinorMobility(BLACK);
-        eval += (gp * minorDiff + (24 - gp) * minorDiff / 3) / 24;
+        hceEval += (gp * minorDiff + (24 - gp) * minorDiff / 3) / 24;
 
         // Rook mobility: scales UP toward endgame (rooks dominate open positions)
         int rookDiff = getRookMobility(WHITE) - getRookMobility(BLACK);
-        eval += (gp * rookDiff / 2 + (24 - gp) * rookDiff) / 24;
+        hceEval += (gp * rookDiff / 2 + (24 - gp) * rookDiff) / 24;
 
         // Queen mobility: flat weight
-        eval += getQueenMobility(WHITE) - getQueenMobility(BLACK);
+        hceEval += getQueenMobility(WHITE) - getQueenMobility(BLACK);
 
-        evalCalculated = true;
-        if (turn == BLACK) eval = -eval;
-
-        return eval;
+        if (turn == BLACK) hceEval = -hceEval;
+        return hceEval;
     }
 
     int see(int toSq, int fromSq) const {
