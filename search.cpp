@@ -64,6 +64,7 @@ class Search {
     int cacheSaveSuccess= 0;
     int deltaPrune = 0;
     int lmpPrune = 0;
+    int futilePrune = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int BASE_NULL_MOVE_REDUCTION = 2;
@@ -130,6 +131,7 @@ class Search {
         cacheSaveSuccess = 0;
         deltaPrune = 0;
         lmpPrune = 0;
+        futilePrune = 0;
         orderedMovesLastRound.clear();
         initKillers();
         startTime = high_resolution_clock::now();
@@ -186,7 +188,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
-        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
@@ -380,11 +382,13 @@ class Search {
         // depth >= 2 avoids cascading explosion at the qsearch boundary
         if (inCheck && depth >= 2 && ply < 40) depth++;
 
+        // compute static eval once for shallow non-PV nodes; reused by RFP and futility pruning
+        int staticEval = (depth <= 3 && alpha == beta - 1 && !inCheck) ? board->getBoardEval() : 0;
+
         // reverse futility pruning: position is so far above beta, skip searching
         if (depth <= 3 && alpha == beta - 1 && !inCheck
             && abs(beta) < BoardType::mateThreshold) {
-            int rfpMargin = depth * 150;
-            if (board->getBoardEval() - rfpMargin >= beta) {
+            if (staticEval - depth * 150 >= beta) {
                 return beta;
             }
         }
@@ -446,15 +450,26 @@ class Search {
                 continue;
             }
 
+            // futility pruning: at depth 1-2, if static eval is so far below alpha that
+            // even a significant material swing can't raise it, skip quiet moves
+            static constexpr int futilityMargin[] = {0, 150, 300};
+            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && index > 0
+                && alpha == beta - 1
+                && abs(alpha) < BoardType::mateThreshold
+                && staticEval + futilityMargin[depth] <= alpha) {
+                futilePrune++;
+                index++;
+                continue;
+            }
+
             board->processMove(m.move);
             int eval;
             if (index == 0) {
                 eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
-                // TODO: also apply LMR to losing captures (see(m) < 0)
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                if (index >= 3 && (isQuiet || m.isLosingCapture) && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(index, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
                     R = max(R, 1);
@@ -644,6 +659,13 @@ class Search {
 
     void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2, uint16_t counterMove = MOVE_NONE) {
         const int* pv = board->pieceValue;
+        // pre-compute SEE once per capture; cached in isLosingCapture to avoid
+        // repeated SEE calls inside the sort comparator
+        for (auto& m : legalMoves) {
+            if (m.isCapture) {
+                m.isLosingCapture = board->see(m) < 0;
+            }
+        }
         sort(legalMoves.begin(), legalMoves.end(),[&, pv](const auto &left, const auto &right){
             auto score = [&](const Move& m) -> int {
                 if (m.move == ttMove) return 60000 * 20000;
@@ -651,8 +673,7 @@ class Search {
                 if (m.isCapture) {
                     // MVV-LVA within tier, SEE as binary gate between tiers
                     int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
-                    if (board->see(m) >= 0) return 30000 * 20000 + mvvlva;
-                    // below quiet moves, but still ordered by MVV-LVA within bad captures
+                    if (!m.isLosingCapture) return 30000 * 20000 + mvvlva;
                     return -(50000 * 20000) + mvvlva;
                 }
                 if (m.move == killer1) return 10000;

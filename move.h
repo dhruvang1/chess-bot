@@ -62,6 +62,7 @@ struct Move {
     bool isCapture = false;
     bool isPromotion = false;
     bool isCastle = false;
+    bool isLosingCapture = false;
 
     Move() = default;
 
