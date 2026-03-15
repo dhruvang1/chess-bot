@@ -72,7 +72,8 @@ class Uci {
         vector<string> tokens = tokenize(msg);
 
         if (msg == "quit") {
-            exit(1);
+            if (datagen) datagenFile.flush();
+            exit(0);
         }
         else if (msg == "uci") {
             cout << "id name simple-bot" << endl;
@@ -132,7 +133,6 @@ class Uci {
                 if (datagen && openingFen.empty()) {
                     openingFen = fenStr;
                     datagenFile << "OPENING " << fenStr << "\n";
-                    datagenFile.flush();
                 }
                 for (int i = movesIdx + 1; i < (int)tokens.size(); i++) {
                     if (tokens[i] == "null") {
@@ -205,7 +205,6 @@ class Uci {
                 int eval = search.lastEval;
                 if (board.turn == BoardType::BLACK) eval = -eval;
                 datagenFile << board.getFen() << " | " << eval << "\n";
-                datagenFile.flush();
             }
 
             board.processMove(bestMove);
