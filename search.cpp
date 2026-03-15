@@ -37,7 +37,7 @@ class Search {
     static const int MAX_PLY = 128;
 
     BoardType* board;
-    vector<TTEntry> ttable;
+    static inline vector<TTEntry> ttable;
     uint16_t killers[128] = {};
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
@@ -293,9 +293,13 @@ class Search {
     Search() {
 //        ofile.open("log.txt");
         initLMR();
-        ttable.reserve(TTSize);
-        for(int i=0;i<TTSize;i++) {
-            ttable.emplace_back();
+        if (ttable.empty()) {
+            ttable.reserve(TTSize);
+            for (int i = 0; i < TTSize; i++) {
+                ttable.emplace_back();
+            }
+        } else {
+            std::ranges::fill(ttable, TTEntry{});
         }
     }
 
@@ -689,3 +693,4 @@ class Search {
         });
     }
 };
+
