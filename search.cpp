@@ -171,8 +171,12 @@ class Search {
 
         // Tapered early-exit fraction: how much of the soft limit must elapse
         // before stability can trigger an early exit.
+        // Computed once per game from the initial clock so bullet games don't
+        // get a shrinking fraction as time is consumed move-by-move.
         // 600s+ → 0.5 (spend at least half the budget), ~10s → 0.1 (exit ASAP).
-        earlyExitFraction = 0.1f + 0.4f * min(1.0f, myTimeLeft / 600000.0f);
+        if (earlyExitFraction == 0.0f) {
+            earlyExitFraction = 0.1f + 0.4f * min(1.0f, myTimeLeft / 600000.0f);
+        }
 
         // Spend at least 75% of the increment before any stability exit fires.
         // Prevents gaining time every move in increment-heavy time controls (e.g. 1+1).
@@ -469,7 +473,7 @@ class Search {
             } else {
                 bool doPvs = true;
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (index >= 3 && (isQuiet || m.isLosingCapture) && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(index, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
                     R = max(R, 1);

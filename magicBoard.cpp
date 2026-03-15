@@ -506,6 +506,62 @@ public:
         return isSquareAttackedByColor(toSq(row, col), color);
     }
 
+    // Bonus for driving the losing king to the corner/edge and bringing
+    // the winning king close. Fires only in basic mating endgames where
+    // NNUE lacks training data for the forcing patterns.
+    int matingBonus(bool winnerIsWhite) {
+        int wkSq = __builtin_ctzll(whiteKing);
+        int bkSq = __builtin_ctzll(blackKing);
+        int loserSq  = winnerIsWhite ? bkSq  : wkSq;
+        int winnerSq = winnerIsWhite ? wkSq  : bkSq;
+
+        int lf = loserSq & 7, lr = loserSq >> 3;
+        int edgeDist = min({lf, 7 - lf, lr, 7 - lr});
+
+        int df = abs((winnerSq & 7) - lf);
+        int dr = abs((winnerSq >> 3) - lr);
+        int kingDist = max(df, dr);
+
+        // Push losing king to edge/corner (+0..+30), bring kings close (+0..+70)
+        int bonus = (3 - edgeDist) * 10 + (7 - kingDist) * 10;
+        return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
+    }
+
+    // KBN vs K: must drive the king to a corner matching the bishop's color.
+    // Light-square bishop → a1 (sq 0) or h8 (sq 63).
+    // Dark-square bishop  → h1 (sq 7) or a8 (sq 56).
+    int kbnMatingBonus(bool winnerIsWhite) {
+        int wkSq = __builtin_ctzll(whiteKing);
+        int bkSq = __builtin_ctzll(blackKing);
+        int loserSq  = winnerIsWhite ? bkSq  : wkSq;
+        int winnerSq = winnerIsWhite ? wkSq  : bkSq;
+
+        uint64_t bishops = winnerIsWhite ? whiteBishops : blackBishops;
+        bool lightBishop = (bishops & lightSquareMask) != 0;
+
+        // Distance to each correct corner (Chebyshev)
+        int lf = loserSq & 7, lr = loserSq >> 3;
+        int distCorner1, distCorner2;
+        if (lightBishop) {
+            // a1 = sq 0 (file 0, rank 0), h8 = sq 63 (file 7, rank 7)
+            distCorner1 = max(lf, lr);
+            distCorner2 = max(7 - lf, 7 - lr);
+        } else {
+            // h1 = sq 7 (file 7, rank 0), a8 = sq 56 (file 0, rank 7)
+            distCorner1 = max(7 - lf, lr);
+            distCorner2 = max(lf, 7 - lr);
+        }
+        int cornerDist = min(distCorner1, distCorner2);
+
+        int df = abs((winnerSq & 7) - lf);
+        int dr = abs((winnerSq >> 3) - lr);
+        int kingDist = max(df, dr);
+
+        // Drive to correct corner (+0..+70), bring kings close (+0..+70)
+        int bonus = (7 - cornerDist) * 10 + (7 - kingDist) * 10;
+        return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
+    }
+
     int getBoardEval() {
         if (evalCalculated) {
             return eval;
@@ -518,6 +574,32 @@ public:
         bool stmWhite = (turn == WHITE);
         eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
                            stmWhite ? blackAcc : whiteAcc);
+
+        // In basic mating endgames NNUE doesn't guide the king to the corner.
+        // Gate on bare king: one bitwise comparison, zero cost in middlegame.
+        bool whiteBarePieces = (allWhite == whiteKing);
+        bool blackBarePieces = (allBlack == blackKing);
+        if (whiteBarePieces || blackBarePieces) {
+            // 0 = can't force mate (lone minor), 1 = generic corner, 2 = KBN (bishop-colour corner)
+            auto matingType = [](uint64_t queens, uint64_t rooks, uint64_t bishops,
+                                 uint64_t knights, uint64_t pawns) -> int {
+                if (queens || rooks || pawns) return 1; // Q/R/pawn → always mate
+                int nb = __builtin_popcountll(bishops);
+                int nn = __builtin_popcountll(knights);
+                if (nb == 1 && nn == 1) return 2; // KBN vs K
+                if (nb >= 2)            return 1; // KBB vs K
+                return 0;                          // lone minor = draw
+            };
+
+            int wType = blackBarePieces ? matingType(whiteQueens, whiteRooks, whiteBishops, whiteKnights, whitePawns) : 0;
+            int bType = whiteBarePieces ? matingType(blackQueens, blackRooks, blackBishops, blackKnights, blackPawns) : 0;
+
+            if (wType == 1) eval += matingBonus(true);
+            else if (wType == 2) eval += kbnMatingBonus(true);
+            else if (bType == 1) eval += matingBonus(false);
+            else if (bType == 2) eval += kbnMatingBonus(false);
+        }
+
         evalCalculated = true;
         return eval;
     }
