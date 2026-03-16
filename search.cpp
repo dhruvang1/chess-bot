@@ -65,6 +65,7 @@ class Search {
     int deltaPrune = 0;
     int lmpPrune = 0;
     int futilePrune = 0;
+    int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int BASE_NULL_MOVE_REDUCTION = 2;
@@ -72,8 +73,6 @@ class Search {
     bool shouldStop = false;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
-    float earlyExitFraction{};
-    long minThinkMs{};
     int handicapTimeLeftMs = INT_MAX;
     MoveList orderedMovesLastRound;
     ofstream ofile;
@@ -132,6 +131,7 @@ class Search {
         deltaPrune = 0;
         lmpPrune = 0;
         futilePrune = 0;
+        bestMoveNodes = 0;
         orderedMovesLastRound.clear();
         initKillers();
         startTime = high_resolution_clock::now();
@@ -169,19 +169,6 @@ class Search {
             hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
         }
 
-        // Tapered early-exit fraction: how much of the soft limit must elapse
-        // before stability can trigger an early exit.
-        // Computed once per game from the initial clock so bullet games don't
-        // get a shrinking fraction as time is consumed move-by-move.
-        // 600s+ → 0.5 (spend at least half the budget), ~10s → 0.1 (exit ASAP).
-        if (earlyExitFraction == 0.0f) {
-            earlyExitFraction = 0.1f + 0.4f * min(1.0f, myTimeLeft / 600000.0f);
-        }
-
-        // Spend at least 75% of the increment before any stability exit fires.
-        // Prevents gaining time every move in increment-heavy time controls (e.g. 1+1).
-        // Zero for no-increment games so behavior is unchanged.
-        minThinkMs = myInc * 3 / 4;
     }
 
     void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
@@ -202,9 +189,6 @@ class Search {
         uint16_t bestMove = MOVE_NONE;
         string bestMoveLine;
         int depthEvaluated = 0;
-        uint16_t lastBestMove = MOVE_NONE;
-        int stabilityCount = 0;
-        int prevEval = 0;
 
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
             // don't start a new iteration past the soft limit
@@ -245,38 +229,23 @@ class Search {
                 break;
             }
 
-            int evalShift = abs(eval - prevEval);
-            prevEval = eval;
             depthEvaluated = depth;
             bestMoveLine = pvToString();
             bestMoveEval = eval;
             bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
 
-            // move stability: if best move unchanged for 3+ iterations after a reasonable time, we are done
-            if (bestMove == lastBestMove) {
-                stabilityCount++;
-            } else {
-                stabilityCount = 0;
-                lastBestMove = bestMove;
-            }
-
-            // eval instability: if eval is shifting a lot, extend soft limit up to 3x
-            // small shifts (< 10cp) → no extension; large shifts (> 50cp) → full 3x extension
-            float instabilityScale = 1.0f + min(2.0f, evalShift / 25.0f);
-            long effectiveSoftLimit = (long)(softTimeLimitMs * instabilityScale);
-
-            auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
-            if (stabilityCount >= 15 && postSearchTime > (long)(effectiveSoftLimit * earlyExitFraction)) {
-                break;
-            }
-            if (stabilityCount >= 7 && postSearchTime > max((long)(effectiveSoftLimit * earlyExitFraction), minThinkMs)) {
-                break;
-            }
-            if (stabilityCount >= 3 && postSearchTime > max((long)(effectiveSoftLimit * (earlyExitFraction + 0.15f)), minThinkMs)) {
-                break;
-            }
-
             if (eval >= BoardType::mateThreshold) {
+                break;
+            }
+
+            // node fraction: what share of total nodes did the best move consume?
+            // high fraction → confident in the choice → scale the soft limit down (exit earlier)
+            // low fraction  → alternatives explored heavily → scale up (spend more time)
+            // nodeFraction in [0,1] maps timeScale to [0.5, 1.5]
+            float nodeFraction = (float)bestMoveNodes / max(1, nodes);
+            float timeScale = 1.5f - nodeFraction;
+            auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
+            if (postSearchTime >= (long)(softTimeLimitMs * timeScale)) {
                 break;
             }
         }
@@ -470,6 +439,7 @@ class Search {
                 continue;
             }
 
+            int nodesBefore = (ply == 0) ? nodes : 0;
             board->processMove(m.move);
             int eval;
             if (index == 0) {
@@ -507,6 +477,9 @@ class Search {
                 maxEval = eval;
                 bestMove = m.move;
                 updatePv(ply, m.move);
+                if (ply == 0) {
+                    bestMoveNodes = nodes - nodesBefore;
+                }
             }
 
             if (eval > alpha) {
