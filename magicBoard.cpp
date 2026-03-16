@@ -30,6 +30,7 @@ public:
         int mgEval;
         int egEval;
         int gamePhase;
+        int halfMoveClock;
     };
 
     Color turn = WHITE;
@@ -105,6 +106,8 @@ public:
         stringstream ss(fen);
         string placement, activeColor, castling, enPassant;
         ss >> placement >> activeColor >> castling >> enPassant;
+        halfMoveClock = 0;
+        ss >> halfMoveClock; // 5th FEN field — absent in stripped FENs, defaults to 0
 
         // Parse piece placement (FEN starts at rank 8 = row 7, file a = col 0)
         int rank = 7, col = 0;
@@ -193,6 +196,8 @@ public:
 
         evalCalculated = false;
 
+        bool resetClock = isPawn(movedPiece) || gonePiece != ' ';
+
         // Snapshot irreversible state BEFORE any mutation
         UndoInfo info {
             move,
@@ -203,7 +208,8 @@ public:
             newSq,  // default: captured piece is on destination
             mgEval,
             egEval,
-            gamePhase
+            gamePhase,
+            halfMoveClock
         };
         // add turn hash
         boardHash ^= hashHelper.getTurnHash();
@@ -307,6 +313,8 @@ public:
         }
 
         prevMoves.push_back(std::move(info));
+
+        halfMoveClock = resetClock ? 0 : halfMoveClock + 1;
 
         int oldCastlingRights = castlingRights;
         castlingRights &= castlingMask[currSq] & castlingMask[newSq];
@@ -442,6 +450,7 @@ public:
         mgEval = info.mgEval;
         egEval = info.egEval;
         gamePhase = info.gamePhase;
+        halfMoveClock = info.halfMoveClock;
 
         // Recompute aggregates
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
@@ -451,8 +460,9 @@ public:
 
     void processNullMove() {
         evalCalculated = false;
-        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase};
+        UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase, halfMoveClock};
         prevMoves.push_back(std::move(info));
+        halfMoveClock++;
         boardHash ^= hashHelper.getTurnHash();
         maybeResetEnPassantHash();
         flipTurn();
@@ -467,6 +477,7 @@ public:
         mgEval = info.mgEval;
         egEval = info.egEval;
         gamePhase = info.gamePhase;
+        halfMoveClock = info.halfMoveClock;
         flipTurn();
     }
 
@@ -788,6 +799,10 @@ public:
         return it != hashHistory.end() && it->second > 1;
     }
 
+    bool isFiftyMoveDraw() const {
+        return halfMoveClock >= 100;
+    }
+
     bool isKingPresent() {
         return whiteKing != 0 && blackKing != 0;
     }
@@ -848,8 +863,7 @@ public:
             fen += char('1' + epRank);
         }
 
-        // Halfmove clock and fullmove number (not tracked, use defaults)
-        fen += " 0 " + to_string(moveCount() / 2 + 1);
+        fen += " " + to_string(halfMoveClock) + " " + to_string(moveCount() / 2 + 1);
 
         return fen;
     }
@@ -945,6 +959,7 @@ private:
 
     int castlingRights = WHITE_OO | WHITE_OOO | BLACK_OO | BLACK_OOO; // 15 at start
     int castlingMask[64]; // mapping squares to castling rights effects
+    int halfMoveClock = 0;
 
     int mgEval = 0;
     int egEval = 0;
@@ -1075,6 +1090,7 @@ private:
         mgEval = 0;
         egEval = 0;
         gamePhase = 0;
+        halfMoveClock = 0;
         if (nnueLoaded) {
             memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
             memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));

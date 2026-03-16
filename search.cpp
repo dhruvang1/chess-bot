@@ -312,6 +312,10 @@ class Search {
             return 0;
         }
 
+        if (board->isFiftyMoveDraw()) {
+            return 0;
+        }
+
         if (!board->isKingPresent()) {
             return -(BoardType::checkmateEval - ply);
         }

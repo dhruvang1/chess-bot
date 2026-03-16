@@ -7,6 +7,7 @@
 
 using namespace std;
 
+// Original implementation, no longer in use.
 class Board {
 public:
     enum Color {
