@@ -5,7 +5,7 @@
 #include <string>
 #include <algorithm>
 
-static constexpr int NNUE_HIDDEN = 256;
+static constexpr int NNUE_HIDDEN = 512;
 static constexpr int NNUE_QA    = 255;
 static constexpr int NNUE_QB    = 64;
 static constexpr int NNUE_SCALE = 400;
@@ -68,22 +68,30 @@ inline void accSub(int16_t* acc, int featureIdx) {
 // Runs output layer from pre-built accumulators. Returns eval from STM's perspective.
 // Loop is written to be auto-vectorizable with NEON/AVX2.
 inline int nnueForward(const int16_t* __restrict__ stm_acc, const int16_t* __restrict__ ntm_acc) {
-    // Split into two accumulators (256 terms each) to reduce overflow risk.
-    // Max per half: 256 * 255*255*64 = ~1.06B < INT32_MAX
-    int32_t output1 = 0, output2 = 0;
+    // 512 neurons × 255² × max_l1w can exceed INT32_MAX.
+    // Inner 64-element blocks stay within int32; only the 8 block sums use int64.
+    int64_t output1 = 0, output2 = 0;
     const int16_t* w = nnueWeights.l1w;
 
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
-        int32_t v = stm_acc[i];
-        if (v < 0) v = 0;
-        if (v > NNUE_QA) v = NNUE_QA;
-        output1 += v * v * w[i];
+    for (int i = 0; i < NNUE_HIDDEN; i += 64) {
+        int32_t block = 0;
+        for (int j = i; j < i + 64; j++) {
+            int32_t v = stm_acc[j];
+            if (v < 0) v = 0;
+            if (v > NNUE_QA) v = NNUE_QA;
+            block += v * v * w[j];
+        }
+        output1 += block;
     }
-    for (int i = 0; i < NNUE_HIDDEN; i++) {
-        int32_t v = ntm_acc[i];
-        if (v < 0) v = 0;
-        if (v > NNUE_QA) v = NNUE_QA;
-        output2 += v * v * w[NNUE_HIDDEN + i];
+    for (int i = 0; i < NNUE_HIDDEN; i += 64) {
+        int32_t block = 0;
+        for (int j = i; j < i + 64; j++) {
+            int32_t v = ntm_acc[j];
+            if (v < 0) v = 0;
+            if (v > NNUE_QA) v = NNUE_QA;
+            block += v * v * w[NNUE_HIDDEN + j];
+        }
+        output2 += block;
     }
 
     int32_t output = output1 / NNUE_QA + output2 / NNUE_QA;

@@ -207,8 +207,10 @@ class Uci {
                 datagenFile << board.getFen() << " | " << eval << "\n";
             }
 
-            board.processMove(bestMove);
-            moves++;
+            if (datagen) {
+                board.processMove(bestMove);
+                moves++;
+            }
 
             cout << "bestmove " << bestMove << endl;
         } else if (tokens[0] == "undo") {
