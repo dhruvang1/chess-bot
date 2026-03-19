@@ -416,43 +416,46 @@ class Search {
 
         vector<pair<int, Move>> resultList;
         uint16_t bestMove = MOVE_NONE;
-        int index = 0;
         int ttflag = TTFlagAlpha;
         int maxEval = NEGATIVE_NUM;
         static constexpr int lmpThreshold[] = {0, 8, 14};
-        for(const auto& m: legalMoves) {
+        for(int i = 0; i < legalMoves.size(); i++) {
+            // Selection sort: swap best remaining move to current position
+            for (int j = i + 1; j < legalMoves.size(); j++) {
+                if (legalMoves[j].score > legalMoves[i].score)
+                    std::swap(legalMoves[i], legalMoves[j]);
+            }
+            const Move& m = legalMoves[i];
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
             // late move pruning: at shallow depth, skip late quiet moves
-            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && index >= lmpThreshold[depth]
+            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && i >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
-                index++;
                 continue;
             }
 
             // futility pruning: at depth 1-2, if static eval is so far below alpha that
             // even a significant material swing can't raise it, skip quiet moves
             static constexpr int futilityMargin[] = {0, 150, 300};
-            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && index > 0
+            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && i > 0
                 && alpha == beta - 1
                 && abs(alpha) < BoardType::mateThreshold
                 && staticEval + futilityMargin[depth] <= alpha) {
                 futilePrune++;
-                index++;
                 continue;
             }
 
             int nodesBefore = (ply == 0) ? nodes : 0;
             board->processMove(m.move);
             int eval;
-            if (index == 0) {
+            if (i == 0) {
                 eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (index >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
-                    int R = lmrTable[min(depth, 63)][min(index, 63)];
+                if (i >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                    int R = lmrTable[min(depth, 63)][min(i, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
@@ -509,7 +512,6 @@ class Search {
                 }
                 break;
             }
-            index++;
         }
 
         if (ply == 0) {
@@ -644,30 +646,19 @@ class Search {
 
     void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2, uint16_t counterMove = MOVE_NONE) {
         const int* pv = board->pieceValue;
-        // pre-compute SEE once per capture; cached in isLosingCapture to avoid
-        // repeated SEE calls inside the sort comparator
         for (auto& m : legalMoves) {
+            if (m.move == ttMove)               { m.score = 60000 * 20000; continue; }
+            if (m.isPromotion)                  { m.score = 50000 * 20000; continue; }
             if (m.isCapture) {
                 m.isLosingCapture = board->see(m) < 0;
-            }
+                int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
+                m.score = m.isLosingCapture ? -(50000 * 20000) + mvvlva : 30000 * 20000 + mvvlva;
+            } else if (m.move == killer1)       m.score = 10000;
+            else if (m.move == killer2)         m.score = 9000;
+            else if (m.move == counterMove)     m.score = 8000;
+            else                                m.score = history[(int)m.movePiece][toSq(m.move)];
         }
-        sort(legalMoves.begin(), legalMoves.end(),[&, pv](const auto &left, const auto &right){
-            auto score = [&](const Move& m) -> int {
-                if (m.move == ttMove) return 60000 * 20000;
-                if (m.isPromotion) return 50000 * 20000;
-                if (m.isCapture) {
-                    // MVV-LVA within tier, SEE as binary gate between tiers
-                    int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
-                    if (!m.isLosingCapture) return 30000 * 20000 + mvvlva;
-                    return -(50000 * 20000) + mvvlva;
-                }
-                if (m.move == killer1) return 10000;
-                if (m.move == killer2) return 9000;
-                if (m.move == counterMove) return 8000;
-                return history[(int)m.movePiece][toSq(m.move)];
-            };
-            return score(right) < score(left);
-        });
+        // No sort here — negamax uses selection sort to pick best move lazily
     }
 };
 
