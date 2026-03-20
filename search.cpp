@@ -301,7 +301,7 @@ class Search {
         return bestMove;
     }
 
-    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ') {
+    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ', uint16_t excludedMove = MOVE_NONE) {
         nodes++;
         pvLength[ply] = 0;
 
@@ -321,29 +321,34 @@ class Search {
         }
 
         // Check transposition table for cached result
-        const TTEntry* ttEntry = getTTEntry(board -> getHash());
+        const TTEntry* ttEntry = getTTEntry(board->getHash());
         uint16_t ttMove = MOVE_NONE;
+        int ttEval = 0;
         if (ttEntry != nullptr) {
-            int ttEval = mateScoreFromTT(ttEntry->eval, ply);
-            if (alpha == beta - 1) {
-                cacheHit++;
-                if (ttEntry->depth >= depth) {
-                    if (ttEntry->flag == TTFlagExact) {
-                        return ttEval;
-                    } else if (ttEntry->flag == TTFlagBeta && ttEval >= beta) {
-                        return beta;
-                    } else if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) {
-                        return alpha;
+            ttEval = mateScoreFromTT(ttEntry->eval, ply);
+            // Skip TT cutoffs during singular search: the TT score was computed with the
+            // excluded move available, so it would give a wrong result here.
+            if (excludedMove == MOVE_NONE) {
+                if (alpha == beta - 1) {
+                    cacheHit++;
+                    if (ttEntry->depth >= depth) {
+                        if (ttEntry->flag == TTFlagExact) {
+                            return ttEval;
+                        } else if (ttEntry->flag == TTFlagBeta && ttEval >= beta) {
+                            return beta;
+                        } else if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) {
+                            return alpha;
+                        }
                     }
+                    ttMove = ttEntry->bestMove;
+                    cacheFutileHit++;
+                } else {
+                    // PV node: only use TT for move ordering, never return early
+                    ttMove = ttEntry->bestMove;
                 }
-                ttMove = ttEntry->bestMove;
-                cacheFutileHit++;
-            } else {
-                // PV node: only use TT for move ordering, never return early
-                ttMove = ttEntry->bestMove;
             }
-        } else if (depth > 3){
-            // internal iterative deepening
+        } else if (depth > 3 && excludedMove == MOVE_NONE) {
+            // internal iterative reduction
             depth -= 1;
         }
 
@@ -371,6 +376,23 @@ class Search {
             && abs(beta) < BoardType::mateThreshold) {
             if (staticEval - depth * 150 >= beta) {
                 return beta;
+            }
+        }
+
+        // Singular extension: if the TT move is significantly better than all alternatives,
+        // extend it by +1 ply. Only at non-PV nodes with a reliable TT entry.
+        bool singularExtension = false;
+        if (excludedMove == MOVE_NONE
+            && alpha == beta - 1
+            && depth >= 8
+            && ttEntry != nullptr
+            && ttEntry->depth >= depth - 3
+            && ttEntry->flag != TTFlagAlpha
+            && abs(ttEval) < BoardType::mateThreshold) {
+            int sBeta = ttEval - 2 * depth;
+            int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, prevMove, prevPiece, ttMove);
+            if (!shouldStop && sScore < sBeta) {
+                singularExtension = true;
             }
         }
 
@@ -426,6 +448,7 @@ class Search {
                     std::swap(legalMoves[i], legalMoves[j]);
             }
             const Move& m = legalMoves[i];
+            if (m.move == excludedMove) continue;
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
             // late move pruning: at shallow depth, skip late quiet moves
@@ -448,9 +471,10 @@ class Search {
 
             int nodesBefore = (ply == 0) ? nodes : 0;
             board->processMove(m.move);
+            int ext = (singularExtension && m.move == ttMove) ? 1 : 0;
             int eval;
             if (i == 0) {
-                eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
+                eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
                 // inCheck refers to pre-move position: don't reduce when responding to check
