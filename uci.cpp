@@ -169,12 +169,15 @@ class Uci {
             }
 
         } else if (tokens[0] == "go") {
-            string bestMove;
+            // "go selfplay depth N": engine maintains board state internally,
+            // applies bestmove after search, and returns the pre-move FEN for datagen.
+            bool isSelfplay = tokens.size() > 1 && tokens[1] == "selfplay";
+            int ti = isSelfplay ? 2 : 1;  // token index offset past optional "selfplay"
 
-            if (tokens.size() > 2 && tokens[1] == "depth") {
-                int maxDepth = stoi(tokens[2]);
-                bestMove = search.getBestMove(board, maxDepth);
-            } else {
+            string bestMove;
+            if (tokens.size() > ti + 1 && tokens[ti] == "depth") {
+                bestMove = search.getBestMove(board, stoi(tokens[ti + 1]));
+            } else if (!isSelfplay) {
                 int whiteTime = 60 * 1000;
                 int blackTime = 60 * 1000;
                 int whiteInc = 0;
@@ -200,19 +203,23 @@ class Uci {
                 }
             }
 
-            if (datagen) {
-                // eval is from side-to-move perspective, convert to white's perspective
-                int eval = search.lastEval;
-                if (board.turn == BoardType::BLACK) eval = -eval;
-                datagenFile << board.getFen() << " | " << eval << "\n";
-            }
-
-            if (datagen) {
+            if (isSelfplay) {
+                // capture FEN before applying the move — this is the position Python records
+                string posFen = board.getFen();
                 board.processMove(bestMove);
                 moves++;
+                cout << "bestmove " << bestMove << "\n";
+                cout << "fen " << posFen << "\n";
+            } else {
+                if (datagen) {
+                    int eval = search.lastEval;
+                    if (board.turn == BoardType::BLACK) eval = -eval;
+                    datagenFile << board.getFen() << " | " << eval << "\n";
+                    board.processMove(bestMove);
+                    moves++;
+                }
+                cout << "bestmove " << bestMove << endl;
             }
-
-            cout << "bestmove " << bestMove << endl;
         } else if (tokens[0] == "undo") {
             if (board.getLastMoveStr() == "null") {
                 board.undoNullMove();
