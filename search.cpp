@@ -66,6 +66,7 @@ class Search {
     int lmpPrune = 0;
     int futilePrune = 0;
     int probcutPrune = 0;
+    int qCacheHit = 0;
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
@@ -133,6 +134,7 @@ class Search {
         lmpPrune = 0;
         futilePrune = 0;
         probcutPrune = 0;
+        qCacheHit = 0;
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
         initKillers();
@@ -182,6 +184,7 @@ class Search {
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
+        cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
@@ -593,6 +596,14 @@ class Search {
 
         if (depth == 0) {
             return board->getBoardEval();
+        }
+
+        const TTEntry* ttEntry = getTTEntry(board->getHash());
+        if (ttEntry != nullptr && alpha == beta - 1) {
+            int ttEval = mateScoreFromTT(ttEntry->eval, ply);
+            if (ttEntry->flag == TTFlagExact) { qCacheHit++; return ttEval; }
+            if (ttEntry->flag == TTFlagBeta  && ttEval >= beta)  { qCacheHit++; return beta; }
+            if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) { qCacheHit++; return alpha; }
         }
 
         int boardEval = board->getBoardEval();
