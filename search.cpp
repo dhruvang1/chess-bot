@@ -70,7 +70,7 @@ class Search {
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
-    int BASE_NULL_MOVE_REDUCTION = 2;
+    int BASE_NULL_MOVE_REDUCTION = 3;
     high_resolution_clock::time_point startTime;
     bool shouldStop = false;
     long softTimeLimitMs{};
@@ -432,7 +432,7 @@ class Search {
         // null move pruning
         if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold) {
             board->processNullMove();
-            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth / 7)), ply + 1, false);
+            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth - 1)/5), ply + 1, false);
             board->undoNullMove();
 
             if (nullEval >= beta) {
