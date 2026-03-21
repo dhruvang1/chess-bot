@@ -65,6 +65,7 @@ class Search {
     int deltaPrune = 0;
     int lmpPrune = 0;
     int futilePrune = 0;
+    int probcutPrune = 0;
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
@@ -131,6 +132,7 @@ class Search {
         deltaPrune = 0;
         lmpPrune = 0;
         futilePrune = 0;
+        probcutPrune = 0;
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
         initKillers();
@@ -179,7 +181,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
-        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
@@ -433,6 +435,31 @@ class Search {
             if (nullEval >= beta) {
                 cutOff++;
                 return nullEval;
+            }
+        }
+
+        // probcut: if a capture beats beta + margin at reduced depth, prune immediately.
+        // Only at non-PV nodes, depth >= 5, not in check, away from mate.
+        static constexpr int PROBCUT_MARGIN = 200;
+        if (alpha == beta - 1 && depth >= 5 && !inCheck && abs(beta) < BoardType::mateThreshold) {
+            int pcBeta = beta + PROBCUT_MARGIN;
+            MoveList pcMoves = legalMoves;  // copy since we'll selection-sort destructively
+            for (int i = 0; i < pcMoves.size(); i++) {
+                for (int j = i + 1; j < pcMoves.size(); j++) {
+                    if (pcMoves[j].score > pcMoves[i].score)
+                        std::swap(pcMoves[i], pcMoves[j]);
+                }
+                const Move& m = pcMoves[i];
+                if (!m.isCapture && !m.isPromotion) continue;
+                if (m.move == excludedMove) continue;
+                if (board->see(m) < PROBCUT_MARGIN) continue;
+                board->processMove(m.move);
+                int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, m.move, m.movePiece);
+                board->undoMove();
+                if (pcEval >= pcBeta) {
+                    probcutPrune++;
+                    return pcEval;
+                }
             }
         }
 
