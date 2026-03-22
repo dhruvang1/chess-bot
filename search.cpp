@@ -138,6 +138,7 @@ class Search {
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
         initKillers();
+        incrementTTAge();
         startTime = high_resolution_clock::now();
         softTimeLimitMs = LONG_MAX;
         hardTimeLimitMs = LONG_MAX;
@@ -337,11 +338,11 @@ class Search {
                 if (alpha == beta - 1) {
                     cacheHit++;
                     if (ttEntry->depth >= depth) {
-                        if (ttEntry->flag == TTFlagExact) {
+                        if (ttEntry->boundType() == TTFlagExact) {
                             return ttEval;
-                        } else if (ttEntry->flag == TTFlagBeta && ttEval >= beta) {
+                        } else if (ttEntry->boundType() == TTFlagBeta && ttEval >= beta) {
                             return beta;
-                        } else if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) {
+                        } else if (ttEntry->boundType() == TTFlagAlpha && ttEval <= alpha) {
                             return alpha;
                         }
                     }
@@ -470,6 +471,12 @@ class Search {
         uint16_t bestMove = MOVE_NONE;
         int ttflag = TTFlagAlpha;
         int maxEval = NEGATIVE_NUM;
+        // Track quiet moves actually searched (not pruned) for history malus on cutoff.
+        // Fixed-size array avoids heap allocation; 64 is more than enough quiet moves per node.
+        uint16_t triedQuiets[64];
+        char triedQuietPieces[64];
+        int numTriedQuiets = 0;
+
         static constexpr int lmpThreshold[] = {0, 8, 14};
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
@@ -497,6 +504,12 @@ class Search {
                 && staticEval + futilityMargin[depth] <= alpha) {
                 futilePrune++;
                 continue;
+            }
+
+            if (isQuiet && numTriedQuiets < 64) {
+                triedQuiets[numTriedQuiets] = m.move;
+                triedQuietPieces[numTriedQuiets] = m.movePiece;
+                numTriedQuiets++;
             }
 
             int nodesBefore = (ply == 0) ? nodes : 0;
@@ -559,7 +572,13 @@ class Search {
                         killers[2*ply + 1] = killers[2*ply];
                         killers[2*ply] = m.move;
                     }
-                    history[(int)m.movePiece][toSq(m.move)] += depth * depth;
+                    int bonus = depth * depth;
+                    history[(int)m.movePiece][toSq(m.move)] += bonus;
+                    // Penalise every quiet move that was searched before this cutoff move.
+                    // They failed to produce a cutoff, so they deserve a lower ordering score.
+                    for (int q = 0; q < numTriedQuiets - 1; q++) {
+                        history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])] -= bonus;
+                    }
                     if (prevMove != MOVE_NONE) {
                         countermoves[(int)prevPiece][toSq(prevMove)] = m.move;
                     }
@@ -601,9 +620,9 @@ class Search {
         const TTEntry* ttEntry = getTTEntry(board->getHash());
         if (ttEntry != nullptr && alpha == beta - 1) {
             int ttEval = mateScoreFromTT(ttEntry->eval, ply);
-            if (ttEntry->flag == TTFlagExact) { qCacheHit++; return ttEval; }
-            if (ttEntry->flag == TTFlagBeta  && ttEval >= beta)  { qCacheHit++; return beta; }
-            if (ttEntry->flag == TTFlagAlpha && ttEval <= alpha) { qCacheHit++; return alpha; }
+            if (ttEntry->boundType() == TTFlagExact) { qCacheHit++; return ttEval; }
+            if (ttEntry->boundType() == TTFlagBeta  && ttEval >= beta)  { qCacheHit++; return beta; }
+            if (ttEntry->boundType() == TTFlagAlpha && ttEval <= alpha) { qCacheHit++; return alpha; }
         }
 
         int boardEval = board->getBoardEval();
@@ -678,13 +697,19 @@ class Search {
         auto entry = &ttable[index];
         auto secondEntry = &ttable[index + 1];
 
-        if (entry -> hash == 0) {
-            entry -> update(board->getHash(), bestMove, ttEval, depth, flag);
-        } else if (depth >= entry -> depth) {
-            secondEntry->update(entry);
-            entry -> update(board->getHash(), bestMove, ttEval, depth, flag);
+        // Age penalty: each generation of staleness reduces the entry's effective depth by 1.
+        // Uses & 63 (bitmask) instead of % 64 since 64 is a power of two.
+        int ageDiff = (ttAge - entry->entryAge()) & 63;
+        int effectiveDepth = (int)entry->depth - ageDiff;
+
+        if (depth >= effectiveDepth) {
+            // New entry wins: push old primary to secondary (still useful for move ordering),
+            // then write new entry to primary.
+            if (entry->hash != 0) secondEntry->update(entry);
+            entry->update(board->getHash(), bestMove, ttEval, depth, flag);
         } else {
-            secondEntry -> update(board->getHash(), bestMove, ttEval, depth, flag);
+            // Old primary is still valuable (deep and not too stale): new entry goes to secondary.
+            secondEntry->update(board->getHash(), bestMove, ttEval, depth, flag);
         }
         cacheSaveSuccess++;
     }
@@ -702,8 +727,14 @@ class Search {
 
     void initKillers() {
         memset(killers, 0, sizeof(killers));
-        memset(history, 0, sizeof(history));
         memset(countermoves, 0, sizeof(countermoves));
+        // preserves relative ordering from last search
+        // while preventing old scores from drowning out new ones
+        for (auto& row : history) {
+            for (auto& val : row) {
+                val >>= 1;
+            }
+        }
     }
 
     void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2, uint16_t counterMove = MOVE_NONE) {
