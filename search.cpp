@@ -265,16 +265,32 @@ class Search {
     int lastEval = 0;
     int maxSearchDepth = 64;
 
+    // Resize and clear the shared TT to fit the requested number of megabytes.
+    // Safe to call at any time; automatically adjusts TTKeySize/TTSize globals.
+    static void resizeTT(int mb) {
+        int totalEntries = (mb * 1024 * 1024) / (int)sizeof(TTEntry);
+        TTKeySize = totalEntries / 2;  // two slots per bucket
+        TTSize    = TTKeySize * 2;
+        // Assign from a new vector to force deallocation of the old allocation.
+        // assign() only shrinks size, not capacity — the old memory would stay reserved.
+        ttable = vector<TTEntry>(TTSize, TTEntry{});
+    }
+
     Search() {
 //        ofile.open("log.txt");
         initLMR();
         if (ttable.empty()) {
-            ttable.reserve(TTSize);
-            for (int i = 0; i < TTSize; i++) {
-                ttable.emplace_back();
-            }
+            // First-ever construction: allocate at the current default size.
+            ttable.assign(TTSize, TTEntry{});
         } else {
-            std::ranges::fill(ttable, TTEntry{});
+            // Subsequent construction (e.g. ucinewgame): clear entries but keep the
+            // existing allocation size (which may have been set by resizeTT).
+            // Only reallocate if the size has changed to avoid redundant work.
+            if ((int)ttable.size() != TTSize) {
+                ttable = vector<TTEntry>(TTSize, TTEntry{});
+            } else {
+                std::ranges::fill(ttable, TTEntry{});
+            }
         }
     }
 

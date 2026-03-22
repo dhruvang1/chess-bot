@@ -7,9 +7,8 @@ using namespace std;
 static const int TTFlagAlpha = 0;  // we couldn't reach the alpha of the position
 static const int TTFlagExact = 1;  // we received the definite evaluation
 static const int TTFlagBeta = 2;  // the move caused a beta cutoff
-// static const int TTKeySize = 9999973; // close to 10M * 16 bytes per entry => 160 MB
-static const int TTKeySize = 19999999; // close to 20M * 16 bytes per entry => 320 MB
-static const int TTSize = 2 * TTKeySize;
+static int TTKeySize = 19999999; // default ~320 MB; resized at runtime via Hash UCI option
+static int TTSize    = 2 * TTKeySize;
 
 // flag layout: upper 6 bits = age (0-63), lower 2 bits = bound type (TTFlagAlpha/Exact/Beta)
 static uint8_t ttAge = 0;

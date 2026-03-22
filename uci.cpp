@@ -79,6 +79,7 @@ class Uci {
             cout << "id name simple-bot" << endl;
             cout << "id author Dhruvang" << endl;
             cout << "option name MaxDepth type spin default 64 min 1 max 64" << endl;
+            cout << "option name Hash type spin default 320 min 1 max 65536" << endl;
             cout << "option name NNUEPath type string default <empty>" << endl;
             cout << "uciok" << endl;
         } else if (msg == "isready") {
@@ -89,6 +90,8 @@ class Uci {
                 if (tokens[2] == "MaxDepth") {
                     maxDepth = stoi(tokens[4]);
                     search.maxSearchDepth = maxDepth;
+                } else if (tokens[2] == "Hash") {
+                    Search::resizeTT(stoi(tokens[4]));
                 } else if (tokens[2] == "NNUEPath") {
                     // join remaining tokens to support paths with spaces
                     string path;
