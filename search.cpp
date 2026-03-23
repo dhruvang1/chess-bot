@@ -433,9 +433,11 @@ class Search {
         }
 
         MoveList legalMoves;
-        // use last round's move as starting point in search
         if (ply == 0 && !orderedMovesLastRound.empty()) {
+            // Reuse last iteration's move list for root move ordering stability,
+            // but re-score so fresh TT move, killers, and history are applied.
             legalMoves = orderedMovesLastRound;
+            scoreMoves(legalMoves, ttMove, killers[0], killers[1], counterMove);
         } else {
             board->getLegalMoves(legalMoves);
             int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
