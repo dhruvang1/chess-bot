@@ -70,6 +70,7 @@ class Search {
     int cacheSaveSuccess= 0;
     int deltaPrune = 0;
     int lmpPrune = 0;
+    int histLmpPrune = 0;
     int futilePrune = 0;
     int probcutPrune = 0;
     int qCacheHit = 0;
@@ -139,6 +140,7 @@ class Search {
         cacheSaveSuccess = 0;
         deltaPrune = 0;
         lmpPrune = 0;
+        histLmpPrune = 0;
         futilePrune = 0;
         probcutPrune = 0;
         qCacheHit = 0;
@@ -193,7 +195,7 @@ class Search {
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << " goodHist " << goodHistoryLmr << endl;
-        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
         cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
@@ -520,6 +522,17 @@ class Search {
             if (ply > 0 && isQuiet && !inCheck && depth <= 2 && i >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
+                continue;
+            }
+
+            // history-gated LMP: at depth 3-4, skip late quiet moves with negative history.
+            // LMP thresholds are higher than LMR (i >= 3) since pruning is irreversible.
+            static constexpr int lmpHistThreshold[] = {0, 0, 0, 20, 30};
+            if (ply > 0 && isQuiet && !inCheck && depth >= 3 && depth <= 4
+                && i >= lmpHistThreshold[depth]
+                && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove
+                && history[(int)m.movePiece][toSq(m.move)] < 0) {
+                histLmpPrune++;
                 continue;
             }
 
