@@ -25,7 +25,7 @@ static void initLMR() {
     lmrTable[0][0] = 0;
     for (int d = 1; d < 64; d++) {
         for (int m = 1; m < 64; m++) {
-            lmrTable[d][m] = 0.75 + log(d) * log(m) / 2.25;
+            lmrTable[d][m] = 0.75 + log(d) * log(m) / 1.75;
         }
     }
     lmrInitialized = true;
@@ -63,6 +63,7 @@ class Search {
     int pvsFailure = 0;
     int lmrSuccess = 0;
     int lmrFailure = 0;
+    int goodHistoryLmr = 0;
     int cacheHit= 0;
     int cacheFutileHit= 0;
     int cacheSave= 0;
@@ -131,6 +132,7 @@ class Search {
         pvsFailure = 0;
         lmrSuccess = 0;
         lmrFailure = 0;
+        goodHistoryLmr = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
         cacheSave = 0;
@@ -185,10 +187,12 @@ class Search {
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
 
-        cout << "info depth " << depthEvaluated << " nodes " << nodes << " time " << duration.count() << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
+        long ms = duration.count();
+        long nps = ms > 0 ? (long)nodes * 1000 / ms : 0;
+        cout << "info depth " << depthEvaluated << " nodes " << nodes << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
-        cout << "info lmr " << lmrSuccess << " " << lmrFailure << endl;
+        cout << "info lmr " << lmrSuccess << " " << lmrFailure << " goodHist " << goodHistoryLmr << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
         cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
@@ -435,7 +439,7 @@ class Search {
         } else {
             board->getLegalMoves(legalMoves);
             int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
-            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
+            scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
         }
 
         if (legalMoves.empty()) {
@@ -546,6 +550,11 @@ class Search {
                 if (i >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(i, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
+                    int hist = history[(int)m.movePiece][toSq(m.move)];
+                    if (hist > 250) {
+                        goodHistoryLmr++;
+                        R -= 1;
+                    }
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
                     eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, m.move, m.movePiece);
@@ -669,7 +678,7 @@ class Search {
         }
 
         uint16_t noMove = MOVE_NONE;
-        reorderMoves(legalMoves, noMove, noMove, noMove);
+        scoreMoves(legalMoves, noMove, noMove, noMove);
 
         int maxEval = alpha;
         int delta = 300;
@@ -783,7 +792,16 @@ class Search {
                         val >>= 1;
     }
 
-    void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
+    // Assigns a score to each move for ordering purposes. Actual ordering is done lazily
+    // via selection sort in negamax. Priority (highest to lowest):
+    //   1. TT move         — best move from a previous search of this position
+    //   2. Promotions      — always winning or very likely winning
+    //   3. Good captures   — winning/neutral exchanges by SEE, ranked by MVV-LVA
+    //   4. Killer 1/2      — quiet moves that caused beta cutoffs at this ply recently
+    //   5. Counter move    — quiet move that refuted the opponent's last move historically
+    //   6. Quiet moves     — ranked by history + 1-ply continuation history
+    //   7. Losing captures — losing exchanges by SEE, ranked by MVV-LVA
+    void scoreMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
                       uint16_t counterMove = MOVE_NONE, char prevPc = ' ', int prevSq = -1) {
         const int* pv = board->pieceValue;
         // Precompute whether we have a valid previous-move context for contHist lookup.
