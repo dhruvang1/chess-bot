@@ -254,7 +254,7 @@ class Uci {
             cout << "----ordered moves----" << endl;
             uint16_t noMove = MOVE_NONE;
             search.setBoard(board);
-            search.reorderMoves(legalMoveList, noMove, noMove, noMove);
+            search.scoreMoves(legalMoveList, noMove, noMove, noMove);
             for(auto& m : legalMoveList) {
                 cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
