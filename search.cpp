@@ -46,6 +46,11 @@ class Search {
     int history[128][64] = {};
     uint16_t countermoves[128][64] = {};
 
+    // Continuation history: contHist[prevPieceIdx][prevToSq][curPieceIdx][curToSq]
+    // Tracks which moves are good given what the previous move was — a 1-ply context window
+    // on top of main history. Uses compact piece indices 0-11 to keep the table at ~2.3MB.
+    int contHist[12][64][12][64] = {};
+
     // Triangular PV table: pvTable[ply][ply..ply+pvLength[ply]-1] stores the PV from that ply.
     // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
     uint16_t pvTable[MAX_PLY][MAX_PLY] = {};
@@ -429,7 +434,8 @@ class Search {
             legalMoves = orderedMovesLastRound;
         } else {
             board->getLegalMoves(legalMoves);
-            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove);
+            int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
+            reorderMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
         }
 
         if (legalMoves.empty()) {
@@ -589,14 +595,23 @@ class Search {
                         killers[2*ply] = m.move;
                     }
                     int bonus = depth * depth;
-                    history[(int)m.movePiece][toSq(m.move)] += bonus;
+                    int ci = pieceIdx(m.movePiece);
+                    int csq = toSq(m.move);
+                    history[(int)m.movePiece][csq] += bonus;
                     // Penalise every quiet move that was searched before this cutoff move.
                     // They failed to produce a cutoff, so they deserve a lower ordering score.
                     for (int q = 0; q < numTriedQuiets - 1; q++) {
                         history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])] -= bonus;
                     }
+                    // Update continuation history with the same bonus/malus.
                     if (prevMove != MOVE_NONE) {
-                        countermoves[(int)prevPiece][toSq(prevMove)] = m.move;
+                        int pi  = pieceIdx(prevPiece);
+                        int psq = toSq(prevMove);
+                        contHist[pi][psq][ci][csq] += bonus;
+                        for (int q = 0; q < numTriedQuiets - 1; q++) {
+                            contHist[pi][psq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])] -= bonus;
+                        }
+                        countermoves[(int)prevPiece][psq] = m.move;
                     }
                 }
                 break;
@@ -741,20 +756,39 @@ class Search {
         return nullptr;
     }
 
-    void initKillers() {
-        memset(killers, 0, sizeof(killers));
-        memset(countermoves, 0, sizeof(countermoves));
-        // preserves relative ordering from last search
-        // while preventing old scores from drowning out new ones
-        for (auto& row : history) {
-            for (auto& val : row) {
-                val >>= 1;
-            }
+    // Maps piece char to compact 0-11 index for contHist.
+    // P/N/B/R/Q/K = 0-5 (white), p/n/b/r/q/k = 6-11 (black).
+    static inline int pieceIdx(char p) {
+        switch (p) {
+            case 'P': return 0; case 'N': return 1; case 'B': return 2;
+            case 'R': return 3; case 'Q': return 4; case 'K': return 5;
+            case 'p': return 6; case 'n': return 7; case 'b': return 8;
+            case 'r': return 9; case 'q': return 10; case 'k': return 11;
+            default:  return 0;
         }
     }
 
-    void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2, uint16_t counterMove = MOVE_NONE) {
+    void initKillers() {
+        memset(killers, 0, sizeof(killers));
+        memset(countermoves, 0, sizeof(countermoves));
+        // Age both history tables toward zero instead of zeroing them.
+        // Preserves relative ordering while letting fresh updates dominate.
+        for (auto& row : history)
+            for (auto& val : row)
+                val >>= 1;
+        for (auto& a : contHist)
+            for (auto& b : a)
+                for (auto& c : b)
+                    for (auto& val : c)
+                        val >>= 1;
+    }
+
+    void reorderMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
+                      uint16_t counterMove = MOVE_NONE, char prevPc = ' ', int prevSq = -1) {
         const int* pv = board->pieceValue;
+        // Precompute whether we have a valid previous-move context for contHist lookup.
+        bool hasContHist = (prevPc != ' ' && prevSq >= 0);
+        int pi = hasContHist ? pieceIdx(prevPc) : 0;
         for (auto& m : legalMoves) {
             if (m.move == ttMove)               { m.score = 60000 * 20000; continue; }
             if (m.isPromotion)                  { m.score = 50000 * 20000; continue; }
@@ -765,7 +799,15 @@ class Search {
             } else if (m.move == killer1)       m.score = 10000;
             else if (m.move == killer2)         m.score = 9000;
             else if (m.move == counterMove)     m.score = 8000;
-            else                                m.score = history[(int)m.movePiece][toSq(m.move)];
+            else {
+                int sq = toSq(m.move);
+                int ci = pieceIdx(m.movePiece);
+                // Blend main history with 1-ply continuation history.
+                // Both tables use the same update magnitude (depth²) and aging (>>= 1),
+                // so they're on the same scale and can be summed directly.
+                m.score = history[(int)m.movePiece][sq]
+                        + (hasContHist ? contHist[pi][prevSq][ci][sq] : 0);
+            }
         }
         // No sort here — negamax uses selection sort to pick best move lazily
     }
