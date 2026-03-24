@@ -561,15 +561,15 @@ class Search {
                 eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
+                bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (i >= 3 && isQuiet && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                if (i >= 3 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(i, 63)];
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
+
+                    if (m.isLosingCapture) R += 1;
                     int hist = history[(int)m.movePiece][toSq(m.move)];
-                    if (hist > 250) {
-                        goodHistoryLmr++;
-                        R -= 1;
-                    }
+                    R -= hist / 300;
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
                     eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, m.move, m.movePiece);
