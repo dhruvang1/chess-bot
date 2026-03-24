@@ -58,7 +58,8 @@ class Search {
 
     int nodes = 0;
     int qNodes = 0;
-    int cutOff = 0;
+    int nullSuccess = 0;
+    int nullAttempt = 0;
     int pvsSuccess = 0;
     int pvsFailure = 0;
     int lmrSuccess = 0;
@@ -128,7 +129,8 @@ class Search {
         this->board = &currentBoard;
         nodes = 0;
         qNodes = 0;
-        cutOff = 0;
+        nullSuccess = 0;
+        nullAttempt = 0;
         pvsSuccess = 0;
         pvsFailure = 0;
         lmrSuccess = 0;
@@ -192,7 +194,9 @@ class Search {
         long ms = duration.count();
         long nps = ms > 0 ? (long)nodes * 1000 / ms : 0;
         cout << "info depth " << depthEvaluated << " nodes " << nodes << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
-        cout << "info qnodes " << qNodes << " nullCutoff " << cutOff << endl;
+        cout << "info qnodes " << qNodes << " qnodes% " << (nodes + qNodes > 0 ? (100 * qNodes) / (nodes + qNodes) : 0) << endl;
+        cout << "info nullAttempt " << nullAttempt << " nullCutoff " << nullSuccess
+             << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << " goodHist " << goodHistoryLmr << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
@@ -460,14 +464,17 @@ class Search {
             }
         }
 
+        int nullEval = !inCheck ? board->getBoardEval() : 0;
+
         // null move pruning
-        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold) {
+        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && nullEval >= beta) {
+            nullAttempt++;
             board->processNullMove();
             int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth - 1)/5), ply + 1, false);
             board->undoNullMove();
 
             if (nullEval >= beta) {
-                cutOff++;
+                nullSuccess++;
                 return nullEval;
             }
         }
