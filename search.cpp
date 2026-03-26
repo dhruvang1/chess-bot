@@ -263,11 +263,14 @@ class Search {
             // high fraction → confident in the choice → scale the soft limit down (exit earlier)
             // low fraction  → alternatives explored heavily → scale up (spend more time)
             // nodeFraction in [0,1] maps timeScale to [0.5, 1.5]
-            float nodeFraction = (float)bestMoveNodes / max(1, nodes);
-            float timeScale = 1.5f - nodeFraction;
-            auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
-            if (postSearchTime >= (long)(softTimeLimitMs * timeScale)) {
-                break;
+            // Only apply when there is a real time limit (skip for fixed-depth searches).
+            if (softTimeLimitMs != LONG_MAX) {
+                float nodeFraction = (float)bestMoveNodes / max(1, nodes);
+                float timeScale = 1.5f - nodeFraction;
+                auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
+                if (postSearchTime >= (long)(softTimeLimitMs * timeScale)) {
+                    break;
+                }
             }
         }
 
