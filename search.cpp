@@ -653,7 +653,7 @@ class Search {
         }
 
         if (ply == 0) {
-            sort(resultList.begin(), resultList.end(), [](auto left, auto right) {
+            stable_sort(resultList.begin(), resultList.end(), [](auto left, auto right) {
                 return right.first < left.first;
             });
 
@@ -855,4 +855,5 @@ class Search {
         // No sort here — negamax uses selection sort to pick best move lazily
     }
 };
+
 
