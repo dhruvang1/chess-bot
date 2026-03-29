@@ -579,7 +579,9 @@ class Search {
 
                     if (m.isLosingCapture) R += 1;
                     int hist = history[(int)m.movePiece][toSq(m.move)];
-                    R -= hist / 300;
+                    // Clamp the history contribution to [-2, +2] so a single piece-square
+                    // combination with extreme negative history can't inflate R beyond reason.
+                    R -= max(hist / 300, -2);
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
                     eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, m.move, m.movePiece);
