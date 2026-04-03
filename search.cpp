@@ -228,6 +228,7 @@ class Search {
                 beta = bestMoveEval + aspiration;
             }
 
+            const MoveList savedMoves = orderedMovesLastRound;
             int eval;
             while (true) {
                 eval = negamax(alpha, beta, depth, 0, false);
@@ -237,9 +238,11 @@ class Search {
                 if (eval <= alpha) {
                     alpha = max(alpha - aspiration, NEGATIVE_NUM);
                     aspiration *= 2;
+                    orderedMovesLastRound = savedMoves;
                 } else if (eval >= beta) {
                     beta = min(beta + aspiration, POSITIVE_NUM);
                     aspiration *= 2;
+                    orderedMovesLastRound = savedMoves;
                 } else {
                     break;
                 }
