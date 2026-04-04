@@ -216,7 +216,7 @@ class Search {
             // don't start a new iteration past the scaled soft limit
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
-            if (elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
+            if (softTimeLimitMs != LONG_MAX && elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
                 break;
             }
 
