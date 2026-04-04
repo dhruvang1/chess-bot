@@ -211,11 +211,12 @@ class Search {
         string bestMoveLine;
         int depthEvaluated = 0;
 
+        float timeScale = 1.0f;
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
-            // don't start a new iteration past the soft limit
+            // don't start a new iteration past the scaled soft limit
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
-            if (elapsedTime >= softTimeLimitMs) {
+            if (elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
                 break;
             }
 
@@ -229,6 +230,7 @@ class Search {
             }
 
             const MoveList savedMoves = orderedMovesLastRound;
+            int nodesAtDepthStart = nodes;
             int eval;
             while (true) {
                 eval = negamax(alpha, beta, depth, 0, false);
@@ -262,18 +264,12 @@ class Search {
                 break;
             }
 
-            // node fraction: what share of total nodes did the best move consume?
-            // high fraction → confident in the choice → scale the soft limit down (exit earlier)
-            // low fraction  → alternatives explored heavily → scale up (spend more time)
-            // nodeFraction in [0,1] maps timeScale to [0.5, 1.5]
-            // Only apply when there is a real time limit (skip for fixed-depth searches).
+            // Compute timeScale for next iteration: high nodeFraction = confident = exit earlier,
+            // low nodeFraction = uncertain = allow more time. Clamped to [0.5, 1.5].
             if (softTimeLimitMs != LONG_MAX) {
-                float nodeFraction = (float)bestMoveNodes / max(1, nodes);
-                float timeScale = 1.5f - nodeFraction;
-                auto postSearchTime = duration_cast<milliseconds>(high_resolution_clock::now() - startTime).count();
-                if (postSearchTime >= (long)(softTimeLimitMs * timeScale)) {
-                    break;
-                }
+                int depthNodes = nodes - nodesAtDepthStart;
+                float nodeFraction = (float)bestMoveNodes / max(1, depthNodes);
+                timeScale = 1.5f - nodeFraction;
             }
         }
 
@@ -860,5 +856,6 @@ class Search {
         // No sort here — negamax uses selection sort to pick best move lazily
     }
 };
+
 
 

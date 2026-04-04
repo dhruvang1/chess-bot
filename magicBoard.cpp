@@ -533,8 +533,8 @@ public:
         int dr = abs((winnerSq >> 3) - lr);
         int kingDist = max(df, dr);
 
-        // Push losing king to edge/corner (+0..+30), bring kings close (+0..+70)
-        int bonus = (3 - edgeDist) * 10 + (7 - kingDist) * 10;
+        // Push losing king to edge/corner (+0..+150), bring kings close (+0..+140)
+        int bonus = (3 - edgeDist) * 50 + (7 - kingDist) * 20;
         return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
     }
 
@@ -568,8 +568,8 @@ public:
         int dr = abs((winnerSq >> 3) - lr);
         int kingDist = max(df, dr);
 
-        // Drive to correct corner (+0..+70), bring kings close (+0..+70)
-        int bonus = (7 - cornerDist) * 10 + (7 - kingDist) * 10;
+        // Drive to correct corner (+0..+350), bring kings close (+0..+140)
+        int bonus = (7 - cornerDist) * 50 + (7 - kingDist) * 20;
         return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
     }
 
@@ -605,7 +605,9 @@ public:
             int wType = blackBarePieces ? matingType(whiteQueens, whiteRooks, whiteBishops, whiteKnights, whitePawns) : 0;
             int bType = whiteBarePieces ? matingType(blackQueens, blackRooks, blackBishops, blackKnights, blackPawns) : 0;
 
-            if (wType == 1) eval += matingBonus(true);
+            if      (wType == 0 && blackBarePieces) eval = 0;  // K+minor(s) vs K: drawn
+            else if (bType == 0 && whiteBarePieces) eval = 0;  // K vs K+minor(s): drawn
+            else if (wType == 1) eval += matingBonus(true);
             else if (wType == 2) eval += kbnMatingBonus(true);
             else if (bType == 1) eval += matingBonus(false);
             else if (bType == 2) eval += kbnMatingBonus(false);
