@@ -64,7 +64,6 @@ class Search {
     int pvsFailure = 0;
     int lmrSuccess = 0;
     int lmrFailure = 0;
-    int goodHistoryLmr = 0;
     int cacheHit= 0;
     int cacheFutileHit= 0;
     int cacheSave= 0;
@@ -85,6 +84,7 @@ class Search {
     long hardTimeLimitMs{};
     int handicapTimeLeftMs = INT_MAX;
     MoveList orderedMovesLastRound;
+    uint16_t prevBestMove = MOVE_NONE;
     ofstream ofile;
 
     inline void updatePv(int ply, uint16_t move) {
@@ -135,7 +135,6 @@ class Search {
         pvsFailure = 0;
         lmrSuccess = 0;
         lmrFailure = 0;
-        goodHistoryLmr = 0;
         cacheHit = 0;
         cacheFutileHit = 0;
         cacheSave = 0;
@@ -198,7 +197,7 @@ class Search {
         cout << "info nullAttempt " << nullAttempt << " nullCutoff " << nullSuccess
              << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
-        cout << "info lmr " << lmrSuccess << " " << lmrFailure << " goodHist " << goodHistoryLmr << endl;
+        cout << "info lmr " << lmrSuccess << " " << lmrFailure << " lmr% " << (lmrSuccess + lmrFailure > 0 ? (100 * lmrSuccess) / (lmrSuccess + lmrFailure) : 0) << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
         cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
@@ -258,6 +257,7 @@ class Search {
             depthEvaluated = depth;
             bestMoveLine = pvToString();
             bestMoveEval = eval;
+            prevBestMove = bestMove;
             bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
 
             if (eval >= BoardType::mateThreshold) {
@@ -294,7 +294,7 @@ class Search {
     }
 
     Search() {
-//        ofile.open("log.txt");
+        if (isManual()) ofile.open("log.txt");
         initLMR();
         if (ttable.empty()) {
             // First-ever construction: allocate at the current default size.
@@ -444,12 +444,30 @@ class Search {
         if (ply == 0 && !orderedMovesLastRound.empty()) {
             // Reuse last iteration's move list for root move ordering stability,
             // but re-score so fresh TT move, killers, and history are applied.
+            // Also boost the previous iteration's best move to second priority so it
+            // stays near the top even if TT changes mid-search.
             legalMoves = orderedMovesLastRound;
             scoreMoves(legalMoves, ttMove, killers[0], killers[1], counterMove);
+            for (auto& m : legalMoves) {
+                if (m.move == prevBestMove && m.move != ttMove)
+                    m.score = 59000 * 20000;
+            }
         } else {
             board->getLegalMoves(legalMoves);
             int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
             scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
+        }
+
+        if (ply == 0 && isManual()) {
+            // Sort a copy so we can log moves in order without disturbing the lazy selection sort
+            MoveList sorted = legalMoves;
+            std::sort(sorted.begin(), sorted.end(), [](const Move& a, const Move& b){ return a.score > b.score; });
+            ofile << "=== depth " << depth << " root move order ===" << endl;
+            for (const auto& m : sorted) {
+                ofile << moveToUci(m.move) << " score=" << m.score
+                      << (m.isCapture ? " cap" : "") << (m.isLosingCapture ? "(losing)" : "")
+                      << endl;
+            }
         }
 
         if (legalMoves.empty()) {

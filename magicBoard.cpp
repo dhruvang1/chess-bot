@@ -809,15 +809,41 @@ public:
         return whiteKing != 0 && blackKing != 0;
     }
 
-    string printBoard() {
-        string ans;
-        for (int r = 7; r >= 0; r--) {
-            for (int c = 0; c < 8; c++) {
-                ans += board[toSq(r, c)];
-                ans += "  ";
+    string printBoard(bool fromWhite = true) {
+        // const string lightSq    = "\033[48;2;245;204;135m";
+        // const string darkSq     = "\033[48;2;181;136;99m";
+        const string lightSq     = "\033[48;2;203;173;121m";
+        const string darkSq    = "\033[48;2;144;99;60m";
+        // const string whitePiece = "\033[1;38;2;255;255;255m";
+        const string whitePiece = "\033[1;4;38;2;255;255;255m";
+        const string blackPiece = "\033[1;38;2;30;30;30m";
+        const string reset      = "\033[0m";
+
+        string ans = "\n";
+        for (int ri = 0; ri < 8; ri++) {
+            int r = fromWhite ? (7 - ri) : ri;
+            ans += char('1' + r);
+            ans += ' ';
+            for (int ci = 0; ci < 8; ci++) {
+                int c = fromWhite ? ci : (7 - ci);
+                ans += ((r + c) % 2 == 1) ? lightSq : darkSq;
+                char p = board[toSq(r, c)];
+                if      (p >= 'A' && p <= 'Z') ans += whitePiece;
+                else if (p >= 'a' && p <= 'z') ans += blackPiece;
+                ans += ' ';
+                ans += (p == ' ' ? ' ' : p);
+                ans += ' ';
+                ans += reset;
             }
-            ans += "\n";
+            ans += '\n';
         }
+        ans += "\n  ";
+        for (int ci = 0; ci < 8; ci++) {
+            int c = fromWhite ? ci : (7 - ci);
+            ans += ci == 0 ? "" :  "  ";
+            ans += char('a' + c);
+        }
+        ans += "\n";
         return ans;
     }
 

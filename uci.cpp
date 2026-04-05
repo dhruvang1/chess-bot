@@ -263,7 +263,14 @@ class Uci {
         } else if (tokens[0] == "fen") {
             cout << board.getFen() << endl;
         } else if (tokens[0] == "print") {
-            cout << board.printBoard() << endl;
+            cout << board.printBoard(board.turn == BoardType::WHITE);
+            string stm = (board.turn == BoardType::WHITE) ? "White" : "Black";
+            cout << "   Side to move: " << stm << "\n";
+            try {
+                int eval = board.getBoardEval();
+                cout << format("   Eval: {:+d} cp ({})\n", eval, stm);
+            } catch (...) {}
+            cout << endl;
         } else if (tokens[0] == "lmr") {
             for (int d = 1; d < 64; d++) {
                 for (int m = 1; m < 64; m++) {
