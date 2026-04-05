@@ -269,7 +269,7 @@ class Search {
             if (softTimeLimitMs != LONG_MAX) {
                 int depthNodes = nodes - nodesAtDepthStart;
                 float nodeFraction = (float)bestMoveNodes / max(1, depthNodes);
-                timeScale = max(0.3f, 1.5f - 2.0f * nodeFraction);
+                timeScale = max(0.3f, 1.5f - 1.5f * nodeFraction);
             }
         }
 
