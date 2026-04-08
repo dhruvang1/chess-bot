@@ -83,6 +83,7 @@ class Search {
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
     int handicapTimeLeftMs = INT_MAX;
+    long timeBankMs = 0;  // saved time from previous moves
     MoveList orderedMovesLastRound;
     uint16_t prevBestMove = MOVE_NONE;
     ofstream ofile;
@@ -211,6 +212,7 @@ class Search {
         int depthEvaluated = 0;
 
         float timeScale = 1.0f;
+        int prevIterEval = 0;
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
             // don't start a new iteration past the scaled soft limit
             auto currentTime = high_resolution_clock::now();
@@ -264,8 +266,20 @@ class Search {
                 break;
             }
 
+            // If score is falling, draw from the time bank to keep searching.
+            // Boost relative to soft limit: 100cp drop ≈ 1x soft limit extra; capped at half the bank.
+            if (softTimeLimitMs != LONG_MAX && timeBankMs > 0 && depth >= 7) {
+                const int drop = prevIterEval - eval;  // positive = score fell
+                if (drop > 10) {
+                    const long boost = min({softTimeLimitMs * (long)drop / 100, timeBankMs / 2, softTimeLimitMs});
+                    softTimeLimitMs += boost;
+                    timeBankMs -= boost;
+                }
+            }
+            prevIterEval = eval;
+
             // Compute timeScale for next iteration: high nodeFraction = confident = exit earlier,
-            // low nodeFraction = uncertain = allow more time. Clamped to [0.5, 1.5].
+            // low nodeFraction = uncertain = allow more time. Clamped to [0.3, 1.5].
             if (softTimeLimitMs != LONG_MAX) {
                 int depthNodes = nodes - nodesAtDepthStart;
                 float nodeFraction = (float)bestMoveNodes / max(1, depthNodes);
@@ -336,6 +350,10 @@ class Search {
         int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         handicapTimeLeftMs = handicapTimeLeftMs - (int)duration.count() + myInc;
         if (handicapTimeLeftMs < 0) handicapTimeLeftMs = 0;
+
+        // bank unused soft-limit time for harder positions later
+        long saved = softTimeLimitMs - (long)duration.count();
+        timeBankMs += max(0L, saved);
 
         return bestMove;
     }
@@ -874,6 +892,9 @@ class Search {
         // No sort here — negamax uses selection sort to pick best move lazily
     }
 };
+
+
+
 
 
 
