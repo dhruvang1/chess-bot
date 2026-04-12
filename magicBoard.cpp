@@ -345,48 +345,40 @@ public:
         const int from = ::fromSq(info.move);
         const int to = ::toSq(info.move);
 
+        // King moves change the king square, invalidating every feature in that
+        // perspective. Skip incremental acc updates and do a full rebuild after
+        // board restoration instead.
+        const bool undoIsKingMove = !isPromoMove(info.move) && isKing(board[to]);
+
         // Reverse accumulator updates before board state changes (we need current board[] to read piece types)
-        if (nnueLoaded) {
+        if (nnueLoaded && !undoIsKingMove) {
+            int wKingSq = __builtin_ctzll(whiteKing);
+            int bKingSq = __builtin_ctzll(blackKing);
             int wi, bi;
             if (isPromoMove(info.move)) {
                 // makeMove did: remove pawn@from, [remove capture@to], add promotedPiece@to
                 // reverse:      add pawn@from,   [add capture@to],     remove promotedPiece@to
                 char pawn = (turn == WHITE) ? 'P' : 'p';
                 char promotedPiece = board[to];
-                getFeatureIndices(promotedPiece, to, wi, bi);
+                getFeatureIndices(promotedPiece, to, wKingSq, bKingSq, wi, bi);
                 accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(pawn, from, wi, bi);
+                getFeatureIndices(pawn, from, wKingSq, bKingSq, wi, bi);
                 accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, to, wi, bi);
+                    getFeatureIndices(info.capturedPiece, to, wKingSq, bKingSq, wi, bi);
                     accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 }
-            } else if (isKing(board[to]) && abs(from - to) == 2) {
-                // Castling: reverse king move and rook move
-                char king = board[to];
-                getFeatureIndices(king, to, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(king, from, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                int rookFrom, rookTo;
-                if (to == from + 2) { rookFrom = from + 3; rookTo = from + 1; }
-                else                { rookFrom = from - 4; rookTo = from - 1; }
-                char rook = board[rookTo];
-                getFeatureIndices(rook, rookTo, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(rook, rookFrom, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
             } else {
                 // Normal move (including en-passant)
                 // makeMove did: [remove capture@capturedSq], move movedPiece from->to
                 // reverse:      [add capture@capturedSq],    move movedPiece to->from
                 char movedPiece = board[to];
-                getFeatureIndices(movedPiece, to, wi, bi);
+                getFeatureIndices(movedPiece, to, wKingSq, bKingSq, wi, bi);
                 accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(movedPiece, from, wi, bi);
+                getFeatureIndices(movedPiece, from, wKingSq, bKingSq, wi, bi);
                 accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, info.capturedSq, wi, bi);
+                    getFeatureIndices(info.capturedPiece, info.capturedSq, wKingSq, bKingSq, wi, bi);
                     accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
                 }
             }
@@ -453,6 +445,11 @@ public:
         allWhite = whitePawns | whiteKnights | whiteBishops | whiteRooks | whiteQueens | whiteKing;
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
+
+        // King moves: both king squares are now fully restored — rebuild accs.
+        if (nnueLoaded && undoIsKingMove) {
+            rebuildBothAccs();
+        }
     }
 
     void processNullMove() {
@@ -580,8 +577,10 @@ public:
         }
 
         bool stmWhite = (turn == WHITE);
+        int bucket = (__builtin_popcountll(occupied) - 2) / 4;
         eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
-                           stmWhite ? blackAcc : whiteAcc);
+                           stmWhite ? blackAcc : whiteAcc,
+                           bucket);
 
         // In basic mating endgames NNUE doesn't guide the king to the corner.
         // Gate on bare king: one bitwise comparison, zero cost in middlegame.
@@ -995,17 +994,25 @@ public:
         return ans;
     }
 
-    void rebuildAccumulator() {
-        resetAccBias();
+    // Full accumulator rebuild from current board[]. Requires both kings on the board.
+    inline void rebuildBothAccs() {
+        int wKingSq = __builtin_ctzll(whiteKing);
+        int bKingSq = __builtin_ctzll(blackKing);
+        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 int wi, bi;
-                getFeatureIndices(board[sq], sq, wi, bi);
+                getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
                 accAdd(whiteAcc, wi);
                 accAdd(blackAcc, bi);
             }
         }
         evalCalculated = false;
+    }
+
+    void rebuildAccumulator() {
+        rebuildBothAccs();
     }
 
 private:
@@ -1049,7 +1056,8 @@ private:
         gamePhase += gamePhaseTable[(int)piece];
         if (nnueLoaded) {
             int wi, bi;
-            getFeatureIndices(piece, sq, wi, bi);
+            getFeatureIndices(piece, sq,
+                __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
             accAdd(whiteAcc, wi);
             accAdd(blackAcc, bi);
         }
@@ -1061,7 +1069,8 @@ private:
         gamePhase -= gamePhaseTable[(int)piece];
         if (nnueLoaded) {
             int wi, bi;
-            getFeatureIndices(piece, sq, wi, bi);
+            getFeatureIndices(piece, sq,
+                __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
             accSub(whiteAcc, wi);
             accSub(blackAcc, bi);
         }
@@ -1071,13 +1080,19 @@ private:
         mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
         if (nnueLoaded) {
-            int wi, bi;
-            getFeatureIndices(piece, fromSq, wi, bi);
-            accSub(whiteAcc, wi);
-            accSub(blackAcc, bi);
-            getFeatureIndices(piece, toSq, wi, bi);
-            accAdd(whiteAcc, wi);
-            accAdd(blackAcc, bi);
+            if (isKing(piece)) {
+                // King bitboard is already updated before this call.
+                // All features in this perspective change → full rebuild.
+                rebuildBothAccs();
+            } else {
+                int wKingSq = __builtin_ctzll(whiteKing);
+                int bKingSq = __builtin_ctzll(blackKing);
+                int wi, bi;
+                getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
+                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
+                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+            }
         }
     }
 
