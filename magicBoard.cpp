@@ -1031,6 +1031,11 @@ public:
     }
 
     // Full accumulator rebuild from current board[]. Requires both kings on the board.
+    // NOTE: iterate board[] directly, NOT the `occupied` bitboard. `occupied` is only
+    // recomputed after movePieceEval returns (processMove line ~352), so it is stale
+    // when a rebuild is triggered from inside movePieceEval. board[] is always current.
+    // TODO: fix the root cause — keep `occupied`/allWhite/allBlack in sync at every
+    // getBitboard() mutation site (ideally via atomic setPiece/removePiece helpers).
     inline void rebuildBothAccs() {
         int wKingSq = __builtin_ctzll(whiteKing);
         int bKingSq = __builtin_ctzll(blackKing);
@@ -1041,6 +1046,38 @@ public:
                 int wi, bi;
                 getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
                 accAdd(whiteAcc, wi);
+                accAdd(blackAcc, bi);
+            }
+        }
+        evalCalculated = false;
+    }
+
+    // Single-perspective rebuilds — used when only one king moved.
+    // Only the perspective whose king moved needs a full rebuild; the other
+    // perspective's features are unchanged (piece sq and opponent king sq
+    // are identical) so only the king piece itself gets an incremental update.
+    inline void rebuildWhiteAcc() {
+        int wKingSq = __builtin_ctzll(whiteKing);
+        int bKingSq = __builtin_ctzll(blackKing);
+        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                int wi, bi;
+                getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
+                accAdd(whiteAcc, wi);
+            }
+        }
+        evalCalculated = false;
+    }
+
+    inline void rebuildBlackAcc() {
+        int wKingSq = __builtin_ctzll(whiteKing);
+        int bKingSq = __builtin_ctzll(blackKing);
+        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                int wi, bi;
+                getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
                 accAdd(blackAcc, bi);
             }
         }
@@ -1119,14 +1156,30 @@ private:
         mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
         if (nnueLoaded && whiteKing && blackKing) {
+            int wKingSq = __builtin_ctzll(whiteKing);
+            int bKingSq = __builtin_ctzll(blackKing);
+            int wi, bi;
             if (isKing(piece)) {
                 // King bitboard is already updated before this call.
-                // All features in this perspective change → full rebuild.
-                rebuildBothAccs();
+                // Only the mover's perspective features all change (new king bucket/flip).
+                // The other perspective only needs an incremental update for the king piece
+                // itself (its square changed), since the other king sq is unchanged.
+                if (isPieceOfColor(WHITE, piece)) {
+                    rebuildWhiteAcc();
+                    // blackIdx depends only on bKingSq (unchanged) + piece sq → incremental
+                    getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
+                    accSub(blackAcc, bi);
+                    getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
+                    accAdd(blackAcc, bi);
+                } else {
+                    rebuildBlackAcc();
+                    // whiteIdx depends only on wKingSq (unchanged) + piece sq → incremental
+                    getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
+                    accSub(whiteAcc, wi);
+                    getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
+                    accAdd(whiteAcc, wi);
+                }
             } else {
-                int wKingSq = __builtin_ctzll(whiteKing);
-                int bKingSq = __builtin_ctzll(blackKing);
-                int wi, bi;
                 getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
                 accSub(whiteAcc, wi); accSub(blackAcc, bi);
                 getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
