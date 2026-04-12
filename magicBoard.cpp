@@ -13,6 +13,31 @@
 
 using namespace std;
 
+// Heap-allocated king-move accumulator stack with proper copy semantics.
+// Avoids blowing the thread stack (285 KB for this array) and lets MagicBoard
+// remain copyable (used by the debug "eval" command in uci.cpp).
+struct KingAccStack {
+    static constexpr int SIZE = 142;  // MAX_PLY(128) + QSEARCH(10) + buffer
+    int top = 0;
+    int16_t (*buf)[2][NNUE_HIDDEN];
+
+    KingAccStack() : top(0), buf(new int16_t[SIZE][2][NNUE_HIDDEN]{}) {}
+    ~KingAccStack() { delete[] buf; }
+
+    KingAccStack(const KingAccStack& o) : top(o.top), buf(new int16_t[SIZE][2][NNUE_HIDDEN]) {
+        memcpy(buf, o.buf, SIZE * 2 * NNUE_HIDDEN * sizeof(int16_t));
+    }
+    KingAccStack& operator=(const KingAccStack& o) {
+        if (this != &o) { top = o.top; memcpy(buf, o.buf, SIZE * 2 * NNUE_HIDDEN * sizeof(int16_t)); }
+        return *this;
+    }
+    KingAccStack(KingAccStack&& o) noexcept : top(o.top), buf(o.buf) { o.buf = nullptr; }
+    KingAccStack& operator=(KingAccStack&& o) noexcept {
+        if (this != &o) { delete[] buf; buf = o.buf; top = o.top; o.buf = nullptr; }
+        return *this;
+    }
+};
+
 class MagicBoard {
 public:
     enum Color {
@@ -192,6 +217,13 @@ public:
         }
 
         evalCalculated = false;
+
+        // Save accumulators before king move so undoMove can restore instead of rebuilding.
+        if (nnueLoaded && isKing(movedPiece)) {
+            memcpy(kas.buf[kas.top][0], whiteAcc, sizeof(whiteAcc));
+            memcpy(kas.buf[kas.top][1], blackAcc, sizeof(blackAcc));
+            kas.top++;
+        }
 
         bool resetClock = isPawn(movedPiece) || gonePiece != ' ';
 
@@ -448,9 +480,11 @@ public:
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
 
-        // King moves: both king squares are now fully restored — rebuild accs.
+        // King moves: restore saved accumulators instead of rebuilding from scratch.
         if (nnueLoaded && undoIsKingMove) {
-            rebuildBothAccs();
+            --kas.top;
+            memcpy(whiteAcc, kas.buf[kas.top][0], sizeof(whiteAcc));
+            memcpy(blackAcc, kas.buf[kas.top][1], sizeof(blackAcc));
         }
     }
 
@@ -1015,6 +1049,7 @@ public:
 
     void rebuildAccumulator() {
         rebuildBothAccs();
+        kas.top = 0;  // reset king move stack when setting up a new position
     }
 
 private:
@@ -1046,6 +1081,8 @@ private:
 
     int16_t whiteAcc[NNUE_HIDDEN]{};  // accumulator from white's perspective
     int16_t blackAcc[NNUE_HIDDEN]{};  // accumulator from black's perspective
+
+    KingAccStack kas;  // accumulator stack for king moves (heap-allocated, copyable)
 
     inline void resetAccBias() {
         memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
