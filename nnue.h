@@ -32,7 +32,7 @@ static constexpr int NNUE_SCALE          = 400;
 struct NNUEWeights {
     int16_t l0w[NNUE_INPUT][NNUE_HIDDEN];          // 24576 × 512 feature weights
     int16_t l0b[NNUE_HIDDEN];                       // hidden bias
-    int16_t l1w[2 * NNUE_HIDDEN][NNUE_OUTPUT_BUCKETS]; // 1024 × 8, saved transposed
+    int16_t l1w[NNUE_OUTPUT_BUCKETS][2 * NNUE_HIDDEN];  // 8 × 1024, saved as [buckets][neurons]
     int16_t l1b[NNUE_OUTPUT_BUCKETS];               // 8 output biases
 };
 
@@ -44,6 +44,7 @@ inline bool loadNNUE(const std::string& path) {
     if (!f) return false;
     f.read(reinterpret_cast<char*>(nnueWeights.l0w), sizeof(nnueWeights.l0w));
     f.read(reinterpret_cast<char*>(nnueWeights.l0b), sizeof(nnueWeights.l0b));
+    // .transpose() in bullet converts column-major to row-major = [BUCKETS][2*HIDDEN]
     f.read(reinterpret_cast<char*>(nnueWeights.l1w), sizeof(nnueWeights.l1w));
     f.read(reinterpret_cast<char*>(nnueWeights.l1b), sizeof(nnueWeights.l1b));
     nnueLoaded = f.good();
@@ -110,7 +111,9 @@ inline void getFeatureIndices(char piece, int sq, int wKingSq, int bKingSq,
     int bBase = (isWhite ? 384 : 0) + pt * 64 + (sq ^ 56);
 
     whiteIdx = 768 * kingBucket(wKingSq) + (wBase ^ kingFlip(wKingSq));
-    blackIdx = 768 * kingBucket(bKingSq) + (bBase ^ kingFlip(bKingSq));
+    // Black perspective: flip bKingSq into black's coordinate system (back rank = rank 0)
+    int bkFlipped = bKingSq ^ 56;
+    blackIdx = 768 * kingBucket(bkFlipped) + (bBase ^ kingFlip(bkFlipped));
 }
 
 inline void accAdd(int16_t* acc, int featureIdx) {
@@ -135,13 +138,15 @@ inline int nnueForward(const int16_t* __restrict__ stm_acc,
     // Inner 64-element blocks stay within int32; only the 8 block sums use int64.
     int64_t output1 = 0, output2 = 0;
 
+    const int16_t* stm_w = nnueWeights.l1w[bucket];
+    const int16_t* ntm_w = nnueWeights.l1w[bucket] + NNUE_HIDDEN;
     for (int i = 0; i < NNUE_HIDDEN; i += 64) {
         int32_t block = 0;
         for (int j = i; j < i + 64; j++) {
             int32_t v = stm_acc[j];
             if (v < 0) v = 0;
             if (v > NNUE_QA) v = NNUE_QA;
-            block += v * v * nnueWeights.l1w[j][bucket];
+            block += v * v * stm_w[j];
         }
         output1 += block;
     }
@@ -151,7 +156,7 @@ inline int nnueForward(const int16_t* __restrict__ stm_acc,
             int32_t v = ntm_acc[j];
             if (v < 0) v = 0;
             if (v > NNUE_QA) v = NNUE_QA;
-            block += v * v * nnueWeights.l1w[NNUE_HIDDEN + j][bucket];
+            block += v * v * ntm_w[j];
         }
         output2 += block;
     }

@@ -351,7 +351,9 @@ public:
         const bool undoIsKingMove = !isPromoMove(info.move) && isKing(board[to]);
 
         // Reverse accumulator updates before board state changes (we need current board[] to read piece types)
-        if (nnueLoaded && !undoIsKingMove) {
+        // Guard: if either king is missing (king-capture position), both processMove and undoMove
+        // skipped all NNUE updates, so the accumulator is already at the pre-capture state.
+        if (nnueLoaded && !undoIsKingMove && whiteKing && blackKing) {
             int wKingSq = __builtin_ctzll(whiteKing);
             int bKingSq = __builtin_ctzll(blackKing);
             int wi, bi;
@@ -1054,7 +1056,7 @@ private:
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase += gamePhaseTable[(int)piece];
-        if (nnueLoaded) {
+        if (nnueLoaded && whiteKing && blackKing) {
             int wi, bi;
             getFeatureIndices(piece, sq,
                 __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
@@ -1067,7 +1069,7 @@ private:
         mgEval -= pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval -= pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase -= gamePhaseTable[(int)piece];
-        if (nnueLoaded) {
+        if (nnueLoaded && whiteKing && blackKing) {
             int wi, bi;
             getFeatureIndices(piece, sq,
                 __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
@@ -1079,7 +1081,7 @@ private:
     inline void movePieceEval(char piece, int fromSq, int toSq) {
         mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
-        if (nnueLoaded) {
+        if (nnueLoaded && whiteKing && blackKing) {
             if (isKing(piece)) {
                 // King bitboard is already updated before this call.
                 // All features in this perspective change → full rebuild.
