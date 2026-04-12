@@ -88,10 +88,7 @@ public:
         whitePawns = whiteKnights = whiteBishops = whiteRooks = whiteQueens = whiteKing = 0;
         blackPawns = blackKnights = blackBishops = blackRooks = blackQueens = blackKing = 0;
         allWhite = allBlack = occupied = 0;
-        if (nnueLoaded) {
-            memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
-            memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
-        }
+        if (nnueLoaded) resetAccBias();
         for (int sq = 0; sq < 64; sq++) board[sq] = ' ';
         prevMoves.clear();
         hashHistory.clear();
@@ -591,26 +588,54 @@ public:
         bool whiteBarePieces = (allWhite == whiteKing);
         bool blackBarePieces = (allBlack == blackKing);
         if (whiteBarePieces || blackBarePieces) {
-            // 0 = can't force mate (lone minor), 1 = generic corner, 2 = KBN (bishop-colour corner)
+            // Mating types for the side with pieces:
+            //   0 = draw (lone minor, or wrong rook pawn)
+            //   1 = generic mate (drive king to any corner)
+            //   2 = KBN vs K (drive king to bishop-colour corner)
+            //   3 = wrong rook pawn draw (KBP where bishop can't cover promotion square)
+            enum MatingType { DRAW = 0, GENERIC = 1, KBN_MATE = 2, WRONG_ROOK_PAWN = 3 };
+
             auto matingType = [](uint64_t queens, uint64_t rooks, uint64_t bishops,
-                                 uint64_t knights, uint64_t pawns) -> int {
-                if (queens || rooks || pawns) return 1; // Q/R/pawn → always mate
+                                 uint64_t knights, uint64_t pawns) -> MatingType {
+                if (queens || rooks || pawns) return GENERIC; // Q/R/pawn → always mate
                 int nb = __builtin_popcountll(bishops);
                 int nn = __builtin_popcountll(knights);
-                if (nb == 1 && nn == 1) return 2; // KBN vs K
-                if (nb >= 2)            return 1; // KBB vs K
-                return 0;                          // lone minor = draw
+                if (nb == 1 && nn == 1) return KBN_MATE; // KBN vs K
+                if (nb >= 2)            return GENERIC;   // KBB vs K
+                return DRAW;                              // lone minor = draw
             };
 
-            int wType = blackBarePieces ? matingType(whiteQueens, whiteRooks, whiteBishops, whiteKnights, whitePawns) : 0;
-            int bType = whiteBarePieces ? matingType(blackQueens, blackRooks, blackBishops, blackKnights, blackPawns) : 0;
+            // KBP(wrong rook pawn) vs K: bishop doesn't control the promotion square,
+            // so the defending king can always reach the corner — theoretical draw.
+            // Promotion square is light iff (file + rank) is odd.
+            auto isWrongRookPawnDraw = [&](uint64_t pawns, uint64_t bishops, bool attackerIsWhite) -> bool {
+                if (__builtin_popcountll(pawns) != 1) return false;
+                if (__builtin_popcountll(bishops) != 1) return false;
+                int pawnFile = __builtin_ctzll(pawns) & 7;
+                if (pawnFile != 0 && pawnFile != 7) return false;
+                int promSq       = attackerIsWhite ? (56 | pawnFile) : pawnFile;
+                bool promIsLight = ((promSq & 7) + (promSq >> 3)) % 2 == 1;
+                bool bishIsLight = (bishops & lightSquareMask) != 0;
+                return promIsLight != bishIsLight;
+            };
 
-            if      (wType == 0 && blackBarePieces) eval = 0;  // K+minor(s) vs K: drawn
-            else if (bType == 0 && whiteBarePieces) eval = 0;  // K vs K+minor(s): drawn
-            else if (wType == 1) eval += matingBonus(true);
-            else if (wType == 2) eval += kbnMatingBonus(true);
-            else if (bType == 1) eval += matingBonus(false);
-            else if (bType == 2) eval += kbnMatingBonus(false);
+            MatingType wType = blackBarePieces ? matingType(whiteQueens, whiteRooks, whiteBishops, whiteKnights, whitePawns) : DRAW;
+            MatingType bType = whiteBarePieces ? matingType(blackQueens, blackRooks, blackBishops, blackKnights, blackPawns) : DRAW;
+
+            // Upgrade GENERIC to WRONG_ROOK_PAWN when applicable
+            if (wType == GENERIC && !whiteQueens && !whiteRooks && !whiteKnights
+                && isWrongRookPawnDraw(whitePawns, whiteBishops, true))  wType = WRONG_ROOK_PAWN;
+            if (bType == GENERIC && !blackQueens && !blackRooks && !blackKnights
+                && isWrongRookPawnDraw(blackPawns, blackBishops, false)) bType = WRONG_ROOK_PAWN;
+
+            if      (wType == DRAW           && blackBarePieces) eval = 0;
+            else if (bType == DRAW           && whiteBarePieces) eval = 0;
+            else if (wType == WRONG_ROOK_PAWN && blackBarePieces) eval = 0;
+            else if (bType == WRONG_ROOK_PAWN && whiteBarePieces) eval = 0;
+            else if (wType == GENERIC)   eval += matingBonus(true);
+            else if (wType == KBN_MATE)  eval += kbnMatingBonus(true);
+            else if (bType == GENERIC)   eval += matingBonus(false);
+            else if (bType == KBN_MATE)  eval += kbnMatingBonus(false);
         }
 
         evalCalculated = true;
@@ -970,6 +995,19 @@ public:
         return ans;
     }
 
+    void rebuildAccumulator() {
+        resetAccBias();
+        for (int sq = 0; sq < 64; sq++) {
+            if (board[sq] != ' ') {
+                int wi, bi;
+                getFeatureIndices(board[sq], sq, wi, bi);
+                accAdd(whiteAcc, wi);
+                accAdd(blackAcc, bi);
+            }
+        }
+        evalCalculated = false;
+    }
+
 private:
     static constexpr int WHITE_OO  = 1;  // white kingside
     static constexpr int WHITE_OOO = 2;  // white queenside
@@ -999,6 +1037,11 @@ private:
 
     int16_t whiteAcc[NNUE_HIDDEN]{};  // accumulator from white's perspective
     int16_t blackAcc[NNUE_HIDDEN]{};  // accumulator from black's perspective
+
+    inline void resetAccBias() {
+        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+    }
 
     inline void addPieceEval(char piece, int sq) {
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
@@ -1119,24 +1162,15 @@ private:
         egEval = 0;
         gamePhase = 0;
         halfMoveClock = 0;
-        if (nnueLoaded) {
-            memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
-            memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
-        }
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
                 mgEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][0][sq];
                 egEval += pieceValue[(int)board[sq]] + evalTable[(int)board[sq]][1][sq];
                 gamePhase += gamePhaseTable[(int)board[sq]];
-                if (nnueLoaded) {
-                    int wi, bi;
-                    getFeatureIndices(board[sq], sq, wi, bi);
-                    accAdd(whiteAcc, wi);
-                    accAdd(blackAcc, bi);
-                }
             }
         }
+        if (nnueLoaded) rebuildAccumulator();
         boardHash ^= hashHelper.whiteShortCastle;
         boardHash ^= hashHelper.whiteLongCastle;
         boardHash ^= hashHelper.blackShortCastle;

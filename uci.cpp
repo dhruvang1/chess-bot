@@ -31,6 +31,7 @@ class Uci {
             cerr << "Error: NNUE file not found or invalid: " << nnuePath << endl;
             exit(1);
         }
+        board.rebuildAccumulator();
     }
 
     vector<string> tokenize(const string &msg) {
@@ -102,6 +103,7 @@ class Uci {
                     if (!loadNNUE(path)) {
                         cout << "info string NNUE error: file not found: " << path << endl;
                     } else {
+                        board.rebuildAccumulator();
                         cout << "info string NNUE enabled: " << path << endl;
                     }
                 }
