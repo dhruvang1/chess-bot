@@ -673,6 +673,13 @@ public:
             else if (bType == KBN_MATE)  eval += kbnMatingBonus(false);
         }
 
+        // Scale eval toward 0 as the 50-move clock ticks up.
+        // Encourages real progress over artificial clock resets (e.g. pawn sacs in drawn endgames).
+        // Formula: (150 - hmc) / 150 → 100% at clock=0, ~67% at clock=50, ~33% at clock=100.
+        if (halfMoveClock > 0 && eval != 0) {
+            eval = (eval * (150 - halfMoveClock)) / 150;
+        }
+
         evalCalculated = true;
         return eval;
     }

@@ -84,6 +84,7 @@ class Search {
     long hardTimeLimitMs{};
     int handicapTimeLeftMs = INT_MAX;
     long timeBankMs = 0;  // saved time from previous moves
+    int myIncMs = 0;      // increment for current time control, used for timeScale floor
     MoveList orderedMovesLastRound;
     uint16_t prevBestMove = MOVE_NONE;
     ofstream ofile;
@@ -161,28 +162,43 @@ class Search {
         int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
         int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
 
-        // phase-aware time allocation: spend less in opening, more in middle game
-        softTimeLimitMs = myTimeLeft / 60;
+        // phase-aware time allocation: spend less in opening, more in middle game.
+        // Divisors interpolate between no-increment (conservative, avoids flagging)
+        // and full-increment (aggressive) based on actual increment: t=0 at 0ms, t=1 at 1s+.
+        myIncMs = myInc;
+        float t = min(1.0f, (float)myInc / 1000.0f);
+        int divisorNoInc, divisorFullInc;
         if (board->moveCount() < 16) {
             // first 16 plies of opening: rely on development patterns, save time
-            softTimeLimitMs = myTimeLeft / 100;
+            divisorNoInc = 100;  divisorFullInc = 40;
         } else if (board->moveCount() < 32) {
             // late opening / early middle game
-            softTimeLimitMs = myTimeLeft / 80;
+            divisorNoInc = 80;   divisorFullInc = 35;
         } else if (board->moveCount() < 64) {
             // pure middle game: spend the most here
-            softTimeLimitMs = myTimeLeft / 50;
+            divisorNoInc = 50;   divisorFullInc = 18;
+        } else {
+            divisorNoInc = 60;   divisorFullInc = 22;
         }
-        softTimeLimitMs += myInc * 3 / 4;
+        int divisor = (int)(divisorNoInc * (1.0f - t) + divisorFullInc * t);
+        softTimeLimitMs = myTimeLeft / divisor + ((long)myInc * 0.8f);
 
-        // tiered hard limits: get progressively tighter as time runs low
-        if (myTimeLeft < 10 * 1000) {
+        // limit the soft time limit to 60% of the time left
+        softTimeLimitMs = min(softTimeLimitMs, (long)(myTimeLeft * 0.5f));
+
+
+        // tiered hard limits: expressed as multiples of soft limit
+        // so they scale naturally with any time control
+        if (myTimeLeft < 10 * softTimeLimitMs) {
+            // ~10 moves left at current pace — panic, no extensions
             hardTimeLimitMs = softTimeLimitMs;
-        } else if (myTimeLeft < 15 * 1000) {
+        } else if (myTimeLeft < 20 * softTimeLimitMs) {
+            // ~20 moves left — tight, small extension allowed
             hardTimeLimitMs = 2 * softTimeLimitMs;
         } else {
-            // 3x soft limit, but always keep a 10s reserve
-            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - 10000L);
+            // plenty of time left — normal extension + proportional reserve
+            long reserve = myTimeLeft / 20;  // keep 20% of clock as cushion
+            hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - reserve);
         }
 
     }
@@ -271,7 +287,7 @@ class Search {
             if (softTimeLimitMs != LONG_MAX && timeBankMs > 0 && depth >= 7) {
                 const int drop = prevIterEval - eval;  // positive = score fell
                 if (drop > 10) {
-                    const long boost = min({softTimeLimitMs * (long)drop / 100, timeBankMs / 2, softTimeLimitMs});
+                    const long boost = min({softTimeLimitMs * (long)drop / 50, timeBankMs / 2, 2 * softTimeLimitMs});
                     softTimeLimitMs += boost;
                     timeBankMs -= boost;
                 }
@@ -279,11 +295,16 @@ class Search {
             prevIterEval = eval;
 
             // Compute timeScale for next iteration: high nodeFraction = confident = exit earlier,
-            // low nodeFraction = uncertain = allow more time. Clamped to [0.3, 1.5].
+            // low nodeFraction = uncertain = allow more time. Clamped to [0.5, 1.5].
+            // Floor is also increment-aware: ensure we spend at least slightly more than the
+            // increment so the clock actually decreases in bullet/blitz games.
             if (softTimeLimitMs != LONG_MAX) {
                 int depthNodes = nodes - nodesAtDepthStart;
                 float nodeFraction = (float)bestMoveNodes / max(1, depthNodes);
-                timeScale = max(0.3f, 1.5f - 1.5f * nodeFraction);
+                float incFloor = softTimeLimitMs > 0
+                    ? (float)(myIncMs * 5 / 4) / (float)softTimeLimitMs  // spend at least 1.25x increment
+                    : 0.0f;
+                timeScale = max({0.5f, incFloor, 1.5f - 1.5f * nodeFraction});
             }
         }
 
