@@ -51,6 +51,11 @@ class Search {
     // on top of main history. Uses compact piece indices 0-11 to keep the table at ~2.3MB.
     int contHist[12][64][12][64] = {};
 
+    // Capture history: captHist[movingPieceIdx][toSq][capturedPieceType]
+    // Separates capture ordering from quiet ordering. capturedPieceType = pieceIdx(cap)/2
+    // so color is ignored (white queen captured == black queen captured). ~18KB.
+    int captHist[12][64][6] = {};
+
     // Triangular PV table: pvTable[ply][ply..ply+pvLength[ply]-1] stores the PV from that ply.
     // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
     uint16_t pvTable[MAX_PLY][MAX_PLY] = {};
@@ -572,6 +577,10 @@ class Search {
         uint16_t triedQuiets[64];
         char triedQuietPieces[64];
         int numTriedQuiets = 0;
+        uint16_t triedCaptures[64];
+        char triedCapturePieces[64];
+        char triedCaptureTypes[64];
+        int numTriedCaptures = 0;
 
         static constexpr int lmpThreshold[] = {0, 8, 14};
         for(int i = 0; i < legalMoves.size(); i++) {
@@ -617,6 +626,12 @@ class Search {
                 triedQuiets[numTriedQuiets] = m.move;
                 triedQuietPieces[numTriedQuiets] = m.movePiece;
                 numTriedQuiets++;
+            }
+            if (m.isCapture && numTriedCaptures < 64) {
+                triedCaptures[numTriedCaptures] = m.move;
+                triedCapturePieces[numTriedCaptures] = m.movePiece;
+                triedCaptureTypes[numTriedCaptures] = m.capturePiece;
+                numTriedCaptures++;
             }
 
             int nodesBefore = (ply == 0) ? nodes : 0;
@@ -681,12 +696,12 @@ class Search {
 
             if (beta <= alpha) {
                 ttflag = TTFlagBeta;
+                int bonus = depth * depth;
                 if (isQuiet) {
                     if (killers[2*ply] != m.move) {
                         killers[2*ply + 1] = killers[2*ply];
                         killers[2*ply] = m.move;
                     }
-                    int bonus = depth * depth;
                     int ci = pieceIdx(m.movePiece);
                     int csq = toSq(m.move);
                     history[(int)m.movePiece][csq] += bonus;
@@ -704,6 +719,12 @@ class Search {
                             contHist[pi][psq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])] -= bonus;
                         }
                         countermoves[(int)prevPiece][psq] = m.move;
+                    }
+                } else if (m.isCapture) {
+                    int capType = pieceIdx(m.capturePiece) / 2;
+                    captHist[pieceIdx(m.movePiece)][toSq(m.move)][capType] += bonus;
+                    for (int q = 0; q < numTriedCaptures - 1; q++) {
+                        captHist[pieceIdx(triedCapturePieces[q])][toSq(triedCaptures[q])][pieceIdx(triedCaptureTypes[q]) / 2] -= bonus;
                     }
                 }
                 break;
@@ -873,6 +894,10 @@ class Search {
                 for (auto& c : b)
                     for (auto& val : c)
                         val >>= 1;
+        for (auto& a : captHist)
+            for (auto& b : a)
+                for (auto& val : b)
+                    val >>= 1;
     }
 
     // Assigns a score to each move for ordering purposes. Actual ordering is done lazily
@@ -896,7 +921,8 @@ class Search {
             if (m.isCapture) {
                 m.isLosingCapture = board->see(m) < 0;
                 int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
-                m.score = m.isLosingCapture ? -(50000 * 20000) + mvvlva : 30000 * 20000 + mvvlva;
+                int ch = captHist[pieceIdx(m.movePiece)][toSq(m.move)][pieceIdx(m.capturePiece) / 2];
+                m.score = m.isLosingCapture ? -(50000 * 20000) + mvvlva + ch : 30000 * 20000 + mvvlva + ch;
             } else if (m.move == killer1)       m.score = 10000;
             else if (m.move == killer2)         m.score = 9000;
             else if (m.move == counterMove)     m.score = 8000;
