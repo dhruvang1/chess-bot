@@ -278,7 +278,7 @@ class Search {
             prevBestMove = bestMove;
             bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
 
-            if (eval >= BoardType::mateThreshold) {
+            if (eval >= BoardType::mateThreshold && depth >= 7) {
                 break;
             }
 
@@ -447,10 +447,10 @@ class Search {
         if (inCheck && depth >= 2 && ply < 40) depth++;
 
         // compute static eval once for shallow non-PV nodes; reused by RFP and futility pruning
-        int staticEval = (depth <= 3 && alpha == beta - 1 && !inCheck) ? board->getBoardEval() : 0;
+        int staticEval = (depth <= 4 && alpha == beta - 1 && !inCheck) ? board->getBoardEval() : 0;
 
         // reverse futility pruning: position is so far above beta, skip searching
-        if (depth <= 3 && alpha == beta - 1 && !inCheck
+        if (depth <= 4 && alpha == beta - 1 && !inCheck
             && abs(beta) < BoardType::mateThreshold) {
             if (staticEval - depth * 150 >= beta) {
                 return beta;
