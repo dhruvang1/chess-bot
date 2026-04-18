@@ -464,7 +464,8 @@ class Search {
 
         // Singular extension: if the TT move is significantly better than all alternatives,
         // extend it by +1 ply. Only at non-PV nodes with a reliable TT entry.
-        bool singularExtension = false;
+        // Double extension: if the margin is extreme (very singular), extend by +2.
+        int singularExtension = 0;
         if (excludedMove == MOVE_NONE
             && alpha == beta - 1
             && depth >= 8
@@ -474,9 +475,8 @@ class Search {
             && abs(ttEval) < BoardType::mateThreshold) {
             int sBeta = ttEval - 2 * depth;
             int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, prevMove, prevPiece, ttMove);
-            if (!shouldStop && sScore < sBeta) {
-                singularExtension = true;
-            }
+            if (!shouldStop && sScore < sBeta)
+                singularExtension = (sScore < sBeta - depth * 3) ? 2 : 1;
         }
 
         uint16_t counterMove = MOVE_NONE;
@@ -636,7 +636,7 @@ class Search {
 
             int nodesBefore = (ply == 0) ? nodes : 0;
             board->processMove(m.move);
-            int ext = (singularExtension && m.move == ttMove) ? 1 : 0;
+            int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
             if (i == 0) {
                 eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, m.move, m.movePiece);
