@@ -598,7 +598,11 @@ class Search {
         char triedCaptureTypes[64];
         int numTriedCaptures = 0;
 
-        static constexpr int lmpThreshold[] = {0, 8, 14};
+        // LMP threshold: keep high when improving (position dynamic, search more moves),
+        // halve when not improving (position stagnant/falling, prune more aggressively).
+        static constexpr int lmpThresholdImp[]    = {0, 8, 14};
+        static constexpr int lmpThresholdNotImp[] = {0, 4, 7};
+        const int* lmpThreshold = improving ? lmpThresholdImp : lmpThresholdNotImp;
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
             for (int j = i + 1; j < legalMoves.size(); j++) {
