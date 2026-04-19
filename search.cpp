@@ -665,6 +665,8 @@ class Search {
                     if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
 
                     if (m.isLosingCapture) R += 1;
+                    // Improving: position is trending up, eval is reliable — search deeper.
+                    if (improving) R--;
                     int hist = history[(int)m.movePiece][toSq(m.move)];
                     // Clamp the history contribution to [-2, +2] so a single piece-square
                     // combination with extreme negative history can't inflate R beyond reason.
