@@ -60,6 +60,9 @@ class Search {
     // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
     uint16_t pvTable[MAX_PLY][MAX_PLY] = {};
     int pvLength[MAX_PLY] = {};
+    // Static eval at each ply for the improving heuristic.
+    // Initialised to NEGATIVE_NUM (sentinel = "not set / in check") at the start of each node.
+    int evalStack[MAX_PLY] = {};
 
     int nodes = 0;
     int qNodes = 0;
@@ -387,6 +390,7 @@ class Search {
     int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ', uint16_t excludedMove = MOVE_NONE) {
         nodes++;
         pvLength[ply] = 0;
+        evalStack[ply] = NEGATIVE_NUM;  // default sentinel; overwritten below if not in check
 
         if (shouldStop) return 0;
 
@@ -451,13 +455,27 @@ class Search {
         // depth >= 2 avoids cascading explosion at the qsearch boundary
         if (inCheck && depth >= 2 && ply < 40) depth++;
 
-        // compute static eval once for shallow non-PV nodes; reused by RFP and futility pruning
-        int staticEval = (depth <= 4 && alpha == beta - 1 && !inCheck) ? board->getBoardEval() : 0;
+        // Compute static eval at every non-check node; stored in evalStack for the improving
+        // heuristic and reused by RFP, futility, and null move — no redundant calls needed.
+        int staticEval = 0;
+        if (!inCheck) {
+            staticEval = board->getBoardEval();
+            evalStack[ply] = staticEval;
+        }
+        // "Improving": true when the position is trending better vs two half-moves ago.
+        // When improving the static eval is on an upward trend and more trustworthy;
+        // when not improving the eval may be a temporary spike and less reliable.
+        bool improving = ply >= 2 && !inCheck
+                      && evalStack[ply - 2] != NEGATIVE_NUM
+                      && staticEval > evalStack[ply - 2];
 
-        // reverse futility pruning: position is so far above beta, skip searching
+        // Reverse futility pruning: position is so far above beta, skip searching.
+        // Improving → smaller margin → prune more (eval is reliable, position trending up).
+        // Not improving → larger margin → prune less (eval might be a temporary spike).
         if (depth <= 4 && alpha == beta - 1 && !inCheck
             && abs(beta) < BoardType::mateThreshold) {
-            if (staticEval - depth * 150 >= beta) {
+            int rfpMargin = improving ? 120 : 175;
+            if (staticEval - depth * rfpMargin >= beta) {
                 return beta;
             }
         }
@@ -528,10 +546,8 @@ class Search {
             }
         }
 
-        int nullEval = !inCheck ? board->getBoardEval() : 0;
-
-        // null move pruning
-        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && nullEval >= beta) {
+        // null move pruning (reuses staticEval computed above — no extra getBoardEval call)
+        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && staticEval >= beta) {
             nullAttempt++;
             board->processNullMove();
             int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth - 1)/5), ply + 1, false);
