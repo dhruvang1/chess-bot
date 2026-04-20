@@ -17,7 +17,7 @@ using namespace std;
 // Avoids blowing the thread stack (285 KB for this array) and lets MagicBoard
 // remain copyable (used by the debug "eval" command in uci.cpp).
 struct KingAccStack {
-    static constexpr int SIZE = 142;  // MAX_PLY(128) + QSEARCH(10) + buffer
+    static constexpr int SIZE = 512; // Enough size for self play game
     int top = 0;
     int16_t (*buf)[2][NNUE_HIDDEN];
 
