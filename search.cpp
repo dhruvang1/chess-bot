@@ -85,6 +85,7 @@ class Search {
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
+    int iterDepth = 0;  // depth of the current iteration; used to cap total extension depth
     int BASE_NULL_MOVE_REDUCTION = 3;
     high_resolution_clock::time_point startTime;
     bool shouldStop = false;
@@ -254,6 +255,7 @@ class Search {
                 beta = bestMoveEval + aspiration;
             }
 
+            iterDepth = depth;
             const MoveList savedMoves = orderedMovesLastRound;
             int nodesAtDepthStart = nodes;
             int eval;
@@ -439,7 +441,10 @@ class Search {
             depth -= 1;
         }
 
-        if (depth <= 0) {
+        // Enter qsearch when depth is exhausted, or when the ply cap is hit.
+        // The ply cap (iterDepth + 8) bounds total extensions across all types
+        // (check, singular, double) preventing unbounded cascade at fixed depth.
+        if (depth <= 0 || ply >= iterDepth + 8) {
             int eval = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply);
             saveInTT(pvLength[ply] > 0 ? pvTable[ply][ply] : MOVE_NONE, eval, depth, TTFlagExact, ply);
             return eval;
