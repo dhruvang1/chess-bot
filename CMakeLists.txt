@@ -6,12 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native")
 
 add_executable(chess_magic main.cpp uci.cpp
-        magicBoard.cpp
-        search.cpp
         staticEvals.cpp
-        hash.cpp
-        transposition.cpp
-        staticEvals.h
 )
 
 add_executable(test_board test/test_board.cpp staticEvals.cpp)

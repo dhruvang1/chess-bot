@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <format>
 #include <unordered_map>
-
 #include "move.h"
 #include "staticEvals.h"
 #include "magic_constants.h"
@@ -13,28 +12,63 @@
 
 using namespace std;
 
-// Heap-allocated king-move accumulator stack with proper copy semantics.
-// Avoids blowing the thread stack (285 KB for this array) and lets MagicBoard
-// remain copyable (used by the debug "eval" command in uci.cpp).
-struct KingAccStack {
-    static constexpr int SIZE = 512; // Enough size for self play game
-    int top = 0;
-    int16_t (*buf)[2][NNUE_HIDDEN];
+// Lazy accumulator stack: processMove() stores feature deltas per ply,
+// getBoardEval() applies them on demand. undoMove() is completely free of
+// NNUE work. MagicBoard remains copyable via explicit copy semantics.
+struct LazyAccStack {
+    static constexpr int MAX_PLY = 512;
 
-    KingAccStack() : top(0), buf(new int16_t[SIZE][2][NNUE_HIDDEN]{}) {}
-    ~KingAccStack() { delete[] buf; }
+    struct AccEntry {
+        alignas(64) int16_t acc[2][NNUE_HIDDEN]; // [0]=white, [1]=black
+        bool correct[2];                          // is this side's acc valid?
+    };
 
-    KingAccStack(const KingAccStack& o) : top(o.top), buf(new int16_t[SIZE][2][NNUE_HIDDEN]) {
-        memcpy(buf, o.buf, SIZE * 2 * NNUE_HIDDEN * sizeof(int16_t));
+    struct SideDelta { int featureIdx; bool isAdd; };
+
+    struct PlyDelta {
+        SideDelta w[8], b[8]; // up to 8 lazy feature changes per side per ply
+        int8_t wCount = 0, bCount = 0;
+    };
+
+    AccEntry* accStack;   // accStack[MAX_PLY] — one entry per search ply
+    PlyDelta* plyDeltas;  // plyDeltas[MAX_PLY] — deltas applied from ply-1 → ply
+
+    LazyAccStack()
+        : accStack(new AccEntry[MAX_PLY]{}),
+          plyDeltas(new PlyDelta[MAX_PLY]{}) {}
+    ~LazyAccStack() { delete[] accStack; delete[] plyDeltas; }
+
+    LazyAccStack(const LazyAccStack& o)
+        : accStack(new AccEntry[MAX_PLY]),
+          plyDeltas(new PlyDelta[MAX_PLY]) {
+        memcpy(accStack, o.accStack, MAX_PLY * sizeof(AccEntry));
+        memcpy(plyDeltas, o.plyDeltas, MAX_PLY * sizeof(PlyDelta));
     }
-    KingAccStack& operator=(const KingAccStack& o) {
-        if (this != &o) { top = o.top; memcpy(buf, o.buf, SIZE * 2 * NNUE_HIDDEN * sizeof(int16_t)); }
+    LazyAccStack& operator=(const LazyAccStack& o) {
+        if (this != &o) {
+            memcpy(accStack, o.accStack, MAX_PLY * sizeof(AccEntry));
+            memcpy(plyDeltas, o.plyDeltas, MAX_PLY * sizeof(PlyDelta));
+        }
         return *this;
     }
-    KingAccStack(KingAccStack&& o) noexcept : top(o.top), buf(o.buf) { o.buf = nullptr; }
-    KingAccStack& operator=(KingAccStack&& o) noexcept {
-        if (this != &o) { delete[] buf; buf = o.buf; top = o.top; o.buf = nullptr; }
+    LazyAccStack(LazyAccStack&& o) noexcept
+        : accStack(o.accStack), plyDeltas(o.plyDeltas) {
+        o.accStack = nullptr; o.plyDeltas = nullptr;
+    }
+    LazyAccStack& operator=(LazyAccStack&& o) noexcept {
+        if (this != &o) {
+            delete[] accStack; delete[] plyDeltas;
+            accStack = o.accStack; plyDeltas = o.plyDeltas;
+            o.accStack = nullptr; o.plyDeltas = nullptr;
+        }
         return *this;
+    }
+
+    inline void appendW(int pendingPly, int featureIdx, bool isAdd) {
+        plyDeltas[pendingPly].w[plyDeltas[pendingPly].wCount++] = {featureIdx, isAdd};
+    }
+    inline void appendB(int pendingPly, int featureIdx, bool isAdd) {
+        plyDeltas[pendingPly].b[plyDeltas[pendingPly].bCount++] = {featureIdx, isAdd};
     }
 };
 
@@ -180,7 +214,8 @@ public:
             enPassantCol = enPassant[0] - 'a';
         }
 
-        // Build hash
+        // Build hash and HCE accumulators (addPieceEval skips NNUE here since pendingPly=0;
+        // rebuildAccumulator() below builds accStack[0] correctly once the board is complete).
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 boardHash ^= hashHelper.getHash(board[sq], rowOf(sq), colOf(sq));
@@ -195,6 +230,7 @@ public:
         if (enPassantCol != -1) boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
 
         hashHistory[boardHash]++;
+        if (nnueLoaded) rebuildAccumulator();
     }
 
     void logMembers() {
@@ -218,12 +254,12 @@ public:
 
         evalCalculated = false;
 
-        // Save accumulators before king move so undoMove can restore instead of rebuilding.
-        if (nnueLoaded && isKing(movedPiece)) {
-            memcpy(kas.buf[kas.top][0], whiteAcc, sizeof(whiteAcc));
-            memcpy(kas.buf[kas.top][1], blackAcc, sizeof(blackAcc));
-            kas.top++;
-        }
+        // Set up the pending ply slot: clear its delta list and mark both sides dirty.
+        // addPieceEval/removePieceEval/movePieceEval will append to this slot.
+        // undoMove just decrements prevMoves — no NNUE reversal needed.
+        pendingPly = static_cast<int>(prevMoves.size()) + 1;
+        las.plyDeltas[pendingPly] = {};
+        las.accStack[pendingPly].correct[0] = las.accStack[pendingPly].correct[1] = false;
 
         bool resetClock = isPawn(movedPiece) || gonePiece != ' ';
 
@@ -377,46 +413,8 @@ public:
         const int from = ::fromSq(info.move);
         const int to = ::toSq(info.move);
 
-        // King moves change the king square, invalidating every feature in that
-        // perspective. Skip incremental acc updates and do a full rebuild after
-        // board restoration instead.
-        const bool undoIsKingMove = !isPromoMove(info.move) && isKing(board[to]);
-
-        // Reverse accumulator updates before board state changes (we need current board[] to read piece types)
-        // Guard: if either king is missing (king-capture position), both processMove and undoMove
-        // skipped all NNUE updates, so the accumulator is already at the pre-capture state.
-        if (nnueLoaded && !undoIsKingMove && whiteKing && blackKing) {
-            int wKingSq = __builtin_ctzll(whiteKing);
-            int bKingSq = __builtin_ctzll(blackKing);
-            int wi, bi;
-            if (isPromoMove(info.move)) {
-                // makeMove did: remove pawn@from, [remove capture@to], add promotedPiece@to
-                // reverse:      add pawn@from,   [add capture@to],     remove promotedPiece@to
-                char pawn = (turn == WHITE) ? 'P' : 'p';
-                char promotedPiece = board[to];
-                getFeatureIndices(promotedPiece, to, wKingSq, bKingSq, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(pawn, from, wKingSq, bKingSq, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, to, wKingSq, bKingSq, wi, bi);
-                    accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                }
-            } else {
-                // Normal move (including en-passant)
-                // makeMove did: [remove capture@capturedSq], move movedPiece from->to
-                // reverse:      [add capture@capturedSq],    move movedPiece to->from
-                char movedPiece = board[to];
-                getFeatureIndices(movedPiece, to, wKingSq, bKingSq, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
-                getFeatureIndices(movedPiece, from, wKingSq, bKingSq, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                if (info.capturedPiece != ' ') {
-                    getFeatureIndices(info.capturedPiece, info.capturedSq, wKingSq, bKingSq, wi, bi);
-                    accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
-                }
-            }
-        }
+        // Lazy acc stack: undo is free — just pop prevMoves and the parent ply's
+        // accStack entry (which was never mutated by this move) is still valid.
 
         if (isPromoMove(info.move)) {
             // Promotion: remove promoted piece, restore pawn
@@ -480,16 +478,14 @@ public:
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
 
-        // King moves: restore saved accumulators instead of rebuilding from scratch.
-        if (nnueLoaded && undoIsKingMove) {
-            --kas.top;
-            memcpy(whiteAcc, kas.buf[kas.top][0], sizeof(whiteAcc));
-            memcpy(blackAcc, kas.buf[kas.top][1], sizeof(blackAcc));
-        }
     }
 
     void processNullMove() {
         evalCalculated = false;
+        // Null move makes no piece changes: zero deltas, both sides inherit parent acc lazily.
+        pendingPly = static_cast<int>(prevMoves.size()) + 1;
+        las.plyDeltas[pendingPly] = {};
+        las.accStack[pendingPly].correct[0] = las.accStack[pendingPly].correct[1] = false;
         UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase, halfMoveClock};
         prevMoves.push_back(std::move(info));
         halfMoveClock++;
@@ -612,10 +608,36 @@ public:
             throw std::runtime_error("NNUE not loaded — set NNUEPath via setoption before searching");
         }
 
+        // Lazy accumulator: for each perspective, walk back to the last valid ply,
+        // then apply all stored deltas forward into the current ply's acc entry.
+        const int ply = static_cast<int>(prevMoves.size());
+        for (int side = 0; side < 2; side++) {
+            if (las.accStack[ply].correct[side]) continue;
+
+            int base = ply - 1;
+            while (base >= 0 && !las.accStack[base].correct[side]) base--;
+            // base == -1 would mean no valid entry exists — should never happen after setup
+
+            memcpy(las.accStack[ply].acc[side], las.accStack[base].acc[side],
+                   NNUE_HIDDEN * sizeof(int16_t));
+
+            // Apply all accumulated deltas from base+1 → ply (linear, order doesn't matter)
+            for (int p = base + 1; p <= ply; p++) {
+                const auto& pd = las.plyDeltas[p];
+                const auto* deltas  = (side == 0) ? pd.w : pd.b;
+                const int   count   = (side == 0) ? pd.wCount : pd.bCount;
+                for (int i = 0; i < count; i++) {
+                    if (deltas[i].isAdd) accAdd(las.accStack[ply].acc[side], deltas[i].featureIdx);
+                    else                 accSub(las.accStack[ply].acc[side], deltas[i].featureIdx);
+                }
+            }
+            las.accStack[ply].correct[side] = true;
+        }
+
         bool stmWhite = (turn == WHITE);
         int bucket = (__builtin_popcountll(occupied) - 2) / 4;
-        eval = nnueForward(stmWhite ? whiteAcc : blackAcc,
-                           stmWhite ? blackAcc : whiteAcc,
+        eval = nnueForward(stmWhite ? las.accStack[ply].acc[0] : las.accStack[ply].acc[1],
+                           stmWhite ? las.accStack[ply].acc[1] : las.accStack[ply].acc[0],
                            bucket);
 
         // In basic mating endgames NNUE doesn't guide the king to the corner.
@@ -1046,16 +1068,18 @@ public:
     inline void rebuildBothAccs() {
         int wKingSq = __builtin_ctzll(whiteKing);
         int bKingSq = __builtin_ctzll(blackKing);
-        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
-        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        auto& entry = las.accStack[0];
+        memcpy(entry.acc[0], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
+        memcpy(entry.acc[1], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 int wi, bi;
                 getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
-                accAdd(whiteAcc, wi);
-                accAdd(blackAcc, bi);
+                accAdd(entry.acc[0], wi);
+                accAdd(entry.acc[1], bi);
             }
         }
+        entry.correct[0] = entry.correct[1] = true;
         evalCalculated = false;
     }
 
@@ -1066,34 +1090,35 @@ public:
     inline void rebuildWhiteAcc() {
         int wKingSq = __builtin_ctzll(whiteKing);
         int bKingSq = __builtin_ctzll(blackKing);
-        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
+        auto& entry = las.accStack[pendingPly];
+        memcpy(entry.acc[0], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 int wi, bi;
                 getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
-                accAdd(whiteAcc, wi);
+                accAdd(entry.acc[0], wi);
             }
         }
-        evalCalculated = false;
+        entry.correct[0] = true;
     }
 
     inline void rebuildBlackAcc() {
         int wKingSq = __builtin_ctzll(whiteKing);
         int bKingSq = __builtin_ctzll(blackKing);
-        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        auto& entry = las.accStack[pendingPly];
+        memcpy(entry.acc[1], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
         for (int sq = 0; sq < 64; sq++) {
             if (board[sq] != ' ') {
                 int wi, bi;
                 getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
-                accAdd(blackAcc, bi);
+                accAdd(entry.acc[1], bi);
             }
         }
-        evalCalculated = false;
+        entry.correct[1] = true;
     }
 
     void rebuildAccumulator() {
-        rebuildBothAccs();
-        kas.top = 0;  // reset king move stack when setting up a new position
+        rebuildBothAccs(); // always targets accStack[0]
     }
 
 private:
@@ -1123,26 +1148,27 @@ private:
     bool evalCalculated = false;
     int eval = 0;
 
-    int16_t whiteAcc[NNUE_HIDDEN]{};  // accumulator from white's perspective
-    int16_t blackAcc[NNUE_HIDDEN]{};  // accumulator from black's perspective
-
-    KingAccStack kas;  // accumulator stack for king moves (heap-allocated, copyable)
+    LazyAccStack las;   // lazy accumulator stack (heap-allocated, copyable)
+    int pendingPly = 0; // ply slot being built during processMove
 
     inline void resetAccBias() {
-        memcpy(whiteAcc, nnueWeights.l0b, sizeof(whiteAcc));
-        memcpy(blackAcc, nnueWeights.l0b, sizeof(blackAcc));
+        memcpy(las.accStack[0].acc[0], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
+        memcpy(las.accStack[0].acc[1], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
+        las.accStack[0].correct[0] = las.accStack[0].correct[1] = false;
     }
 
     inline void addPieceEval(char piece, int sq) {
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase += gamePhaseTable[(int)piece];
-        if (nnueLoaded && whiteKing && blackKing) {
+        // pendingPly > 0 means we are inside processMove; skip during position setup
+        // (setupFromFen calls rebuildAccumulator at the end to build accStack[0] correctly).
+        if (nnueLoaded && whiteKing && blackKing && pendingPly > 0) {
             int wi, bi;
             getFeatureIndices(piece, sq,
                 __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
-            accAdd(whiteAcc, wi);
-            accAdd(blackAcc, bi);
+            las.appendW(pendingPly, wi, true);
+            las.appendB(pendingPly, bi, true);
         }
     }
 
@@ -1150,12 +1176,12 @@ private:
         mgEval -= pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval -= pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase -= gamePhaseTable[(int)piece];
-        if (nnueLoaded && whiteKing && blackKing) {
+        if (nnueLoaded && whiteKing && blackKing && pendingPly > 0) {
             int wi, bi;
             getFeatureIndices(piece, sq,
                 __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
-            accSub(whiteAcc, wi);
-            accSub(blackAcc, bi);
+            las.appendW(pendingPly, wi, false);
+            las.appendB(pendingPly, bi, false);
         }
     }
 
@@ -1168,29 +1194,31 @@ private:
             int wi, bi;
             if (isKing(piece)) {
                 // King bitboard is already updated before this call.
-                // Only the mover's perspective features all change (new king bucket/flip).
-                // The other perspective only needs an incremental update for the king piece
-                // itself (its square changed), since the other king sq is unchanged.
+                // The mover's perspective is eagerly rebuilt (all features change with new
+                // king bucket/flip). The other perspective only needs an incremental delta
+                // for the king piece itself (other king sq is unchanged).
                 if (isPieceOfColor(WHITE, piece)) {
-                    rebuildWhiteAcc();
-                    // blackIdx depends only on bKingSq (unchanged) + piece sq → incremental
+                    rebuildWhiteAcc(); // eager: writes accStack[pendingPly].acc[0], sets correct[0]=true
+                    // black's perspective: only the king square changed → lazy delta
                     getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                    accSub(blackAcc, bi);
+                    las.appendB(pendingPly, bi, false);
                     getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                    accAdd(blackAcc, bi);
+                    las.appendB(pendingPly, bi, true);
                 } else {
-                    rebuildBlackAcc();
-                    // whiteIdx depends only on wKingSq (unchanged) + piece sq → incremental
+                    rebuildBlackAcc(); // eager: writes accStack[pendingPly].acc[1], sets correct[1]=true
+                    // white's perspective: only the king square changed → lazy delta
                     getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                    accSub(whiteAcc, wi);
+                    las.appendW(pendingPly, wi, false);
                     getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                    accAdd(whiteAcc, wi);
+                    las.appendW(pendingPly, wi, true);
                 }
             } else {
                 getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                accSub(whiteAcc, wi); accSub(blackAcc, bi);
+                las.appendW(pendingPly, wi, false);
+                las.appendB(pendingPly, bi, false);
                 getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                accAdd(whiteAcc, wi); accAdd(blackAcc, bi);
+                las.appendW(pendingPly, wi, true);
+                las.appendB(pendingPly, bi, true);
             }
         }
     }
