@@ -23,10 +23,13 @@ struct LazyAccStack {
         bool correct[2];                          // is this side's acc valid?
     };
 
-    struct SideDelta { int featureIdx; bool isAdd; };
+    // A single fused accumulator update for one perspective:
+    //   sub2 == -1  →  QUIET/PROMO: acc += w[add1] - w[sub1]          (one pass)
+    //   sub2 != -1  →  CAPTURE/EP:  acc += w[add1] - w[sub1] - w[sub2] (one pass)
+    struct FusedDelta { int sub1 = -1, sub2 = -1, add1 = -1; };
 
     struct PlyDelta {
-        SideDelta w[8], b[8]; // up to 8 lazy feature changes per side per ply
+        FusedDelta w[2], b[2]; // max 2 per side (castling = rook + king)
         int8_t wCount = 0, bCount = 0;
     };
 
@@ -64,11 +67,11 @@ struct LazyAccStack {
         return *this;
     }
 
-    inline void appendW(int pendingPly, int featureIdx, bool isAdd) {
-        plyDeltas[pendingPly].w[plyDeltas[pendingPly].wCount++] = {featureIdx, isAdd};
+    inline void appendFusedW(int ply, int s1, int s2, int a1) {
+        plyDeltas[ply].w[plyDeltas[ply].wCount++] = {s1, s2, a1};
     }
-    inline void appendB(int pendingPly, int featureIdx, bool isAdd) {
-        plyDeltas[pendingPly].b[plyDeltas[pendingPly].bCount++] = {featureIdx, isAdd};
+    inline void appendFusedB(int ply, int s1, int s2, int a1) {
+        plyDeltas[ply].b[plyDeltas[ply].bCount++] = {s1, s2, a1};
     }
 };
 
@@ -289,6 +292,18 @@ public:
                 newPiece -= 32;
             }
 
+            // Compute all NNUE feature indices BEFORE any board updates so the
+            // king squares and piece positions are still in their pre-move state.
+            int pawnW = -1, pawnB = -1, queenW = -1, queenB = -1, capW = -1, capB = -1;
+            if (nnueLoaded && whiteKing && blackKing) {
+                int wKingSq = __builtin_ctzll(whiteKing);
+                int bKingSq = __builtin_ctzll(blackKing);
+                if (gonePiece != ' ')
+                    getFeatureIndices(gonePiece, newSq,     wKingSq, bKingSq, capW,   capB);
+                getFeatureIndices(movedPiece,   currSq,    wKingSq, bKingSq, pawnW,  pawnB);
+                getFeatureIndices(newPiece,     newSq,     wKingSq, bKingSq, queenW, queenB);
+            }
+
             // Remove captured piece
             if (gonePiece != ' ') {
                 boardHash ^= pieceHash(gonePiece, newSq);
@@ -307,6 +322,19 @@ public:
             board[newSq] = newPiece;
             boardHash ^= pieceHash(newPiece, newSq);
             addPieceEval(newPiece, newSq);
+
+            // Emit a single fused NNUE delta for the whole promotion:
+            //   no capture → QUIET  (sub pawn, add queen)
+            //   capture    → CAPTURE (sub cap, sub pawn, add queen)
+            if (nnueLoaded && whiteKing && blackKing) {
+                if (capW == -1) {
+                    las.appendFusedW(pendingPly, pawnW, -1,    queenW);
+                    las.appendFusedB(pendingPly, pawnB, -1,    queenB);
+                } else {
+                    las.appendFusedW(pendingPly, capW,  pawnW, queenW);
+                    las.appendFusedB(pendingPly, capB,  pawnB, queenB);
+                }
+            }
 
         } else if (isKing(board[currSq]) && abs(newSq - currSq) == 2) {
             // if King is moving two squares it is castling
@@ -342,6 +370,12 @@ public:
             board[currSq] = ' ';
             movePieceEval(movedPiece, currSq, newSq);
         } else {
+            // capW / capB: feature indices of the piece being removed from the board.
+            // Computed BEFORE the captured piece is removed so the feature index reflects
+            // the correct board state.  Passed to movePieceEval so it can emit a single
+            // fused delta (sub cap + sub from + add to) instead of separate ops.
+            int capW = -1, capB = -1;
+
             // handle double pawn moves
             if (isPawn(movedPiece) && abs(rowOf(newSq) - rowOf(currSq)) == 2) {
                 boardHash ^= hashHelper.getEnPassantHash(colOf(currSq));
@@ -355,6 +389,11 @@ public:
                 info.capturedSq = capturedSq;
                 info.capturedPiece = board[capturedSq];
 
+                // Record the EP-captured pawn's feature indices BEFORE removing it.
+                if (nnueLoaded && whiteKing && blackKing)
+                    getFeatureIndices(board[capturedSq], capturedSq,
+                        __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), capW, capB);
+
                 // remove the captured pawn
                 boardHash ^= pieceHash(board[capturedSq], capturedSq);
                 removePieceEval(board[capturedSq], capturedSq);
@@ -363,18 +402,23 @@ public:
             }
 
             if (gonePiece != ' ') {
+                // Record the normal captured piece's feature indices BEFORE removing it.
+                if (nnueLoaded && whiteKing && blackKing)
+                    getFeatureIndices(gonePiece, newSq,
+                        __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), capW, capB);
+
                 boardHash ^= pieceHash(gonePiece, newSq);
                 getBitboard(gonePiece) &= ~sqToBB(newSq);
                 removePieceEval(gonePiece, newSq);
             }
 
-            // Actual piece movement
+            // Actual piece movement — movePieceEval emits the fused delta using capW/capB.
             boardHash ^= pieceHash(movedPiece, currSq);
             boardHash ^= pieceHash(movedPiece, newSq);
             getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
             board[newSq] = movedPiece;
             board[currSq] = ' ';
-            movePieceEval(movedPiece, currSq, newSq);
+            movePieceEval(movedPiece, currSq, newSq, capW, capB);
         }
 
         prevMoves.push_back(std::move(info));
@@ -543,9 +587,10 @@ public:
         return isSquareAttackedByColor(toSq(row, col), color);
     }
 
-    // Bonus for driving the losing king to the corner/edge and bringing
-    // the winning king close. Fires only in basic mating endgames where
-    // NNUE lacks training data for the forcing patterns.
+    // Bonus for driving the losing king to the corner/edge, bringing the
+    // winning king close, and rewarding all winning pieces for proximity
+    // to the losing king (tropism). Fires only in basic mating endgames
+    // where NNUE lacks training data for the forcing patterns.
     int matingBonus(bool winnerIsWhite) {
         int wkSq = __builtin_ctzll(whiteKing);
         int bkSq = __builtin_ctzll(blackKing);
@@ -559,14 +604,27 @@ public:
         int dr = abs((winnerSq >> 3) - lr);
         int kingDist = max(df, dr);
 
-        // Push losing king to edge/corner (+0..+150), bring kings close (+0..+140)
-        int bonus = (3 - edgeDist) * 50 + (7 - kingDist) * 20;
+        // Push losing king to edge/corner (+0..+600), bring winning king close (+0..+350)
+        int bonus = (3 - edgeDist) * 200 + (7 - kingDist) * 50;
+
+        // Piece tropism: reward every winning piece (excluding own king, already counted)
+        // for proximity to the losing king. Uses Chebyshev distance so a rook cutting
+        // a rank/file scores the same as a king adjacent — directionally correct and
+        // naturally guides rook/queen/bishop toward the mating zone without special-casing.
+        uint64_t pieces = (winnerIsWhite ? allWhite : allBlack)
+                        & ~(winnerIsWhite ? whiteKing : blackKing);
+        while (pieces) {
+            int psq = __builtin_ctzll(pieces); pieces &= pieces - 1;
+            int pDist = max(abs((psq & 7) - lf), abs((psq >> 3) - lr));
+            bonus += (7 - pDist) * 15;
+        }
+
         return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
     }
 
     // KBN vs K: must drive the king to a corner matching the bishop's color.
-    // Light-square bishop → a1 (sq 0) or h8 (sq 63).
-    // Dark-square bishop  → h1 (sq 7) or a8 (sq 56).
+    // Light-square bishop → h1 (sq 7) or a8 (sq 56).
+    // Dark-square bishop  → a1 (sq 0) or h8 (sq 63).
     int kbnMatingBonus(bool winnerIsWhite) {
         int wkSq = __builtin_ctzll(whiteKing);
         int bkSq = __builtin_ctzll(blackKing);
@@ -576,26 +634,55 @@ public:
         uint64_t bishops = winnerIsWhite ? whiteBishops : blackBishops;
         bool lightBishop = (bishops & lightSquareMask) != 0;
 
-        // Distance to each correct corner (Chebyshev)
         int lf = loserSq & 7, lr = loserSq >> 3;
-        int distCorner1, distCorner2;
+
+        // Distance to each correct corner (Chebyshev).
+        int correctDist1, correctDist2;
+        // Distance to each wrong corner — needed for the "push out of wrong corner" gradient.
+        int wrongDist1, wrongDist2;
         if (lightBishop) {
-            // a1 = sq 0 (file 0, rank 0), h8 = sq 63 (file 7, rank 7)
-            distCorner1 = max(lf, lr);
-            distCorner2 = max(7 - lf, 7 - lr);
+            // Correct: h1 (file 7, rank 0), a8 (file 0, rank 7)
+            correctDist1 = max(7 - lf, lr);
+            correctDist2 = max(lf, 7 - lr);
+            // Wrong:   a1 (file 0, rank 0), h8 (file 7, rank 7)
+            wrongDist1   = max(lf, lr);
+            wrongDist2   = max(7 - lf, 7 - lr);
         } else {
-            // h1 = sq 7 (file 7, rank 0), a8 = sq 56 (file 0, rank 7)
-            distCorner1 = max(7 - lf, lr);
-            distCorner2 = max(lf, 7 - lr);
+            // Correct: a1 (file 0, rank 0), h8 (file 7, rank 7)
+            correctDist1 = max(lf, lr);
+            correctDist2 = max(7 - lf, 7 - lr);
+            // Wrong:   h1 (file 7, rank 0), a8 (file 0, rank 7)
+            wrongDist1   = max(7 - lf, lr);
+            wrongDist2   = max(lf, 7 - lr);
         }
-        int cornerDist = min(distCorner1, distCorner2);
+        int cornerDist = min(correctDist1, correctDist2);
+        // wrongCornerDist is 0 when the king is sitting in a wrong corner.
+        // Rewarding a larger value here creates an explicit gradient that pushes
+        // the king away from wrong corners, which the correctCornerDist term alone
+        // cannot provide (it contributes 0 from either wrong corner).
+        int wrongCornerDist = min(wrongDist1, wrongDist2);
 
         int df = abs((winnerSq & 7) - lf);
         int dr = abs((winnerSq >> 3) - lr);
         int kingDist = max(df, dr);
 
-        // Drive to correct corner (+0..+350), bring kings close (+0..+140)
-        int bonus = (7 - cornerDist) * 50 + (7 - kingDist) * 20;
+        // Baseline: always signals a win regardless of king position (+500).
+        // Correct corner drive: +0..+700. Wrong corner push: +0..+560.
+        // Winning king proximity: +0..+350.
+        int bonus = 500
+                  + (7 - cornerDist)  * 100
+                  + wrongCornerDist   * 80
+                  + (7 - kingDist)    * 50;
+
+        // Piece tropism: reward knight and bishop for proximity to the losing king.
+        uint64_t pieces = (winnerIsWhite ? allWhite : allBlack)
+                        & ~(winnerIsWhite ? whiteKing : blackKing);
+        while (pieces) {
+            int psq = __builtin_ctzll(pieces); pieces &= pieces - 1;
+            int pDist = max(abs((psq & 7) - lf), abs((psq >> 3) - lr));
+            bonus += (7 - pDist) * 15;
+        }
+
         return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
     }
 
@@ -621,14 +708,21 @@ public:
             memcpy(las.accStack[ply].acc[side], las.accStack[base].acc[side],
                    NNUE_HIDDEN * sizeof(int16_t));
 
-            // Apply all accumulated deltas from base+1 → ply (linear, order doesn't matter)
+            // Apply all accumulated fused deltas from base+1 → ply.
+            // Each FusedDelta is one combined accumulator pass:
+            //   sub2==-1 → QUIET/PROMO: acc += w[add1] - w[sub1]
+            //   sub2!=-1 → CAPTURE/EP:  acc += w[add1] - w[sub1] - w[sub2]
             for (int p = base + 1; p <= ply; p++) {
-                const auto& pd = las.plyDeltas[p];
-                const auto* deltas  = (side == 0) ? pd.w : pd.b;
-                const int   count   = (side == 0) ? pd.wCount : pd.bCount;
+                const auto& pd    = las.plyDeltas[p];
+                const auto* deltas = (side == 0) ? pd.w : pd.b;
+                const int   count  = (side == 0) ? pd.wCount : pd.bCount;
+                int16_t* acc = las.accStack[ply].acc[side];
                 for (int i = 0; i < count; i++) {
-                    if (deltas[i].isAdd) accAdd(las.accStack[ply].acc[side], deltas[i].featureIdx);
-                    else                 accSub(las.accStack[ply].acc[side], deltas[i].featureIdx);
+                    const auto& d = deltas[i];
+                    if (d.sub2 == -1)
+                        accFusedQuiet  (acc, d.sub1, d.add1);
+                    else
+                        accFusedCapture(acc, d.sub1, d.sub2, d.add1);
                 }
             }
             las.accStack[ply].correct[side] = true;
@@ -690,15 +784,23 @@ public:
             else if (wType == WRONG_ROOK_PAWN && blackBarePieces) eval = 0;
             else if (bType == WRONG_ROOK_PAWN && whiteBarePieces) eval = 0;
             else if (wType == GENERIC)   eval += matingBonus(true);
-            else if (wType == KBN_MATE)  eval += kbnMatingBonus(true);
+            else if (wType == KBN_MATE)  eval  = kbnMatingBonus(true);   // override: NNUE has no data here
             else if (bType == GENERIC)   eval += matingBonus(false);
-            else if (bType == KBN_MATE)  eval += kbnMatingBonus(false);
+            else if (bType == KBN_MATE)  eval  = kbnMatingBonus(false);  // override: NNUE has no data here
         }
 
         // Scale eval toward 0 as the 50-move clock ticks up.
         // Encourages real progress over artificial clock resets (e.g. pawn sacs in drawn endgames).
         // Formula: (150 - hmc) / 150 → 100% at clock=0, ~67% at clock=50, ~33% at clock=100.
-        if (halfMoveClock > 0 && eval != 0) {
+        // Skip for KBN_MATE: the clock never resets in KBN vs K and the heuristic
+        // already encodes all the positional progress — shrinking it creates false draws.
+        bool kbnW = blackBarePieces && __builtin_popcountll(whiteBishops) == 1
+                                    && __builtin_popcountll(whiteKnights) == 1
+                                    && !whiteQueens && !whiteRooks && !whitePawns;
+        bool kbnB = whiteBarePieces && __builtin_popcountll(blackBishops) == 1
+                                    && __builtin_popcountll(blackKnights) == 1
+                                    && !blackQueens && !blackRooks && !blackPawns;
+        if (!kbnW && !kbnB && halfMoveClock > 0 && eval != 0) {
             eval = (eval * (150 - halfMoveClock)) / 150;
         }
 
@@ -1161,64 +1263,57 @@ private:
         mgEval += pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval += pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase += gamePhaseTable[(int)piece];
-        // pendingPly > 0 means we are inside processMove; skip during position setup
-        // (setupFromFen calls rebuildAccumulator at the end to build accStack[0] correctly).
-        if (nnueLoaded && whiteKing && blackKing && pendingPly > 0) {
-            int wi, bi;
-            getFeatureIndices(piece, sq,
-                __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
-            las.appendW(pendingPly, wi, true);
-            las.appendB(pendingPly, bi, true);
-        }
+        // NNUE deltas are emitted as fused ops directly in processMove, not here.
     }
 
     inline void removePieceEval(char piece, int sq) {
         mgEval -= pieceValue[(int)piece] + evalTable[(int)piece][0][sq];
         egEval -= pieceValue[(int)piece] + evalTable[(int)piece][1][sq];
         gamePhase -= gamePhaseTable[(int)piece];
-        if (nnueLoaded && whiteKing && blackKing && pendingPly > 0) {
-            int wi, bi;
-            getFeatureIndices(piece, sq,
-                __builtin_ctzll(whiteKing), __builtin_ctzll(blackKing), wi, bi);
-            las.appendW(pendingPly, wi, false);
-            las.appendB(pendingPly, bi, false);
-        }
+        // NNUE deltas are emitted as fused ops directly in processMove, not here.
     }
 
-    inline void movePieceEval(char piece, int fromSq, int toSq) {
+    // capW / capB: feature indices of the piece being captured, pre-computed by the caller
+    // before the captured piece was removed from the board.  -1 means no capture (quiet move).
+    inline void movePieceEval(char piece, int fromSq, int toSq, int capW = -1, int capB = -1) {
         mgEval += evalTable[(int)piece][0][toSq] - evalTable[(int)piece][0][fromSq];
         egEval += evalTable[(int)piece][1][toSq] - evalTable[(int)piece][1][fromSq];
         if (nnueLoaded && whiteKing && blackKing) {
             int wKingSq = __builtin_ctzll(whiteKing);
             int bKingSq = __builtin_ctzll(blackKing);
-            int wi, bi;
+            int wi_from, bi_from, wi_to, bi_to;
+            getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi_from, bi_from);
+            getFeatureIndices(piece, toSq,   wKingSq, bKingSq, wi_to,   bi_to);
             if (isKing(piece)) {
                 // King bitboard is already updated before this call.
                 // The mover's perspective is eagerly rebuilt (all features change with new
-                // king bucket/flip). The other perspective only needs an incremental delta
-                // for the king piece itself (other king sq is unchanged).
+                // king bucket/flip). The other perspective gets a single fused delta:
+                //   quiet king move → QUIET shape  (sub king_from, add king_to)
+                //   king capture    → CAPTURE shape (sub cap, sub king_from, add king_to)
                 if (isPieceOfColor(WHITE, piece)) {
                     rebuildWhiteAcc(); // eager: writes accStack[pendingPly].acc[0], sets correct[0]=true
-                    // black's perspective: only the king square changed → lazy delta
-                    getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                    las.appendB(pendingPly, bi, false);
-                    getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                    las.appendB(pendingPly, bi, true);
+                    if (capB == -1)
+                        las.appendFusedB(pendingPly, bi_from, -1,    bi_to);
+                    else
+                        las.appendFusedB(pendingPly, capB,   bi_from, bi_to);
                 } else {
                     rebuildBlackAcc(); // eager: writes accStack[pendingPly].acc[1], sets correct[1]=true
-                    // white's perspective: only the king square changed → lazy delta
-                    getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                    las.appendW(pendingPly, wi, false);
-                    getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                    las.appendW(pendingPly, wi, true);
+                    if (capW == -1)
+                        las.appendFusedW(pendingPly, wi_from, -1,    wi_to);
+                    else
+                        las.appendFusedW(pendingPly, capW,   wi_from, wi_to);
                 }
             } else {
-                getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi, bi);
-                las.appendW(pendingPly, wi, false);
-                las.appendB(pendingPly, bi, false);
-                getFeatureIndices(piece, toSq, wKingSq, bKingSq, wi, bi);
-                las.appendW(pendingPly, wi, true);
-                las.appendB(pendingPly, bi, true);
+                // Non-king piece: both perspectives get a fused delta.
+                //   quiet / no-cap → QUIET shape   (sub from, add to)
+                //   capture        → CAPTURE shape  (sub cap, sub from, add to)
+                if (capW == -1) {
+                    las.appendFusedW(pendingPly, wi_from, -1,    wi_to);
+                    las.appendFusedB(pendingPly, bi_from, -1,    bi_to);
+                } else {
+                    las.appendFusedW(pendingPly, capW,   wi_from, wi_to);
+                    las.appendFusedB(pendingPly, capB,   bi_from, bi_to);
+                }
             }
         }
     }

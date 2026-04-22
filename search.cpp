@@ -239,10 +239,11 @@ class Search {
         float timeScale = 1.0f;
         int prevIterEval = 0;
         for (int depth = START_DEPTH; depth <= maxDepth; depth++) {
-            // don't start a new iteration past the scaled soft limit
+            // don't start a new iteration past the scaled soft limit;
+            // always complete depth=1 so we have at least one valid move.
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
-            if (softTimeLimitMs != LONG_MAX && elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
+            if (depth > START_DEPTH && softTimeLimitMs != LONG_MAX && elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
                 break;
             }
 

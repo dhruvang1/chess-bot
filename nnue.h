@@ -128,6 +128,23 @@ inline void accSub(int16_t* acc, int featureIdx) {
         acc[i] -= row[i];
 }
 
+// Fused quiet update: acc += w[add1] - w[sub1]  (one combined pass, half the bandwidth)
+inline void accFusedQuiet(int16_t* acc, int sub1, int add1) {
+    const int16_t* rowSub = nnueWeights.l0w[sub1];
+    const int16_t* rowAdd = nnueWeights.l0w[add1];
+    for (int i = 0; i < NNUE_HIDDEN; i++)
+        acc[i] += static_cast<int16_t>(rowAdd[i] - rowSub[i]);
+}
+
+// Fused capture update: acc += w[add1] - w[sub1] - w[sub2]  (one pass, two-thirds the bandwidth)
+inline void accFusedCapture(int16_t* acc, int sub1, int sub2, int add1) {
+    const int16_t* rowSub1 = nnueWeights.l0w[sub1];
+    const int16_t* rowSub2 = nnueWeights.l0w[sub2];
+    const int16_t* rowAdd  = nnueWeights.l0w[add1];
+    for (int i = 0; i < NNUE_HIDDEN; i++)
+        acc[i] += static_cast<int16_t>(rowAdd[i] - rowSub1[i] - rowSub2[i]);
+}
+
 // Runs the output layer. bucket = (popcount(occupied) - 2) / 4.
 // l1w is stored transposed as [2*HIDDEN][BUCKETS], so l1w[neuron][bucket].
 // Loop written to be auto-vectorizable with NEON/AVX2.
