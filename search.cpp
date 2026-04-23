@@ -230,11 +230,25 @@ class Search {
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
 
+    // Returns the single legal move at the root, or MOVE_NONE if 0 or 2+ legal moves.
+    uint16_t forcedRootMove() {
+        MoveList moves;
+        board->getLegalMoves(moves, true);
+        if (moves.size() != 1) return MOVE_NONE;
+        return moves[0].move;
+    }
+
     string runSearch(int maxDepth) {
         int bestMoveEval = 0;
         uint16_t bestMove = MOVE_NONE;
         string bestMoveLine;
         int depthEvaluated = 0;
+
+        uint16_t forced = forcedRootMove();
+        if (forced != MOVE_NONE) {
+            logSearchResult(0, 0, moveToUci(forced));
+            return moveToUci(forced);
+        }
 
         float timeScale = 1.0f;
         int prevIterEval = 0;
@@ -521,7 +535,7 @@ class Search {
                     m.score = 59000 * 20000;
             }
         } else {
-            board->getLegalMoves(legalMoves);
+            board->getLegalMoves(legalMoves, ply + depth <= 4);
             int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
             scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
         }

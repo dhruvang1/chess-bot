@@ -563,18 +563,32 @@ public:
         flipTurn();
     }
 
-    void getCapturesPromo(MoveList& legalMoves) {
-        generateMoves(legalMoves, true);
+    void getCapturesPromo(MoveList& moves) {
+        generateMoves(moves, true);
     }
 
-    void getLegalMoves(MoveList& legalMoves) {
-        generateMoves(legalMoves, false);
+    void getLegalMoves(MoveList& moves, bool filterIllegal = false) {
+        generateMoves(moves, false);
+        if (!filterIllegal) return;
+        Color ourColor = turn;
+        MoveList legal;
+        for (const Move& m : moves) {
+            processMove(m.move);
+            if (!isKingInCheck(ourColor))
+                legal.push_back(m);
+            undoMove();
+        }
+        moves = std::move(legal);
+    }
+
+    bool isKingInCheck(Color color) {
+        uint64_t myKing = (color == WHITE) ? whiteKing : blackKing;
+        const int kingSq = __builtin_ctzll(myKing);
+        return isSquareAttackedByColor(kingSq, flipColor(color));
     }
 
     bool isKingInCheck() {
-        uint64_t myKing = (turn == WHITE) ? whiteKing : blackKing;
-        const int kingSq = __builtin_ctzll(myKing);
-        return isSquareAttackedByColor(kingSq, flipColor(turn));
+        return isKingInCheck(turn);
     }
 
     bool isSquareAttackedByColor(int sq, Color color) {
@@ -1849,6 +1863,10 @@ private:
         char kingChar = (turn == WHITE) ? 'K' : 'k';
         int kingSq = __builtin_ctzll(myKing);
         uint64_t kingMoves = kingAttackTable[kingSq] & ~((turn == WHITE) ? allWhite : allBlack);
+        // Remove king from occupied so sliders see through its current square.
+        // Without this, a rook/bishop/queen behind the king would be blocked by
+        // the king itself, making the destination appear safe when it isn't.
+        occupied ^= myKing;
         while (kingMoves) {
             int to = __builtin_ctzll(kingMoves);
             kingMoves &= kingMoves - 1;
@@ -1859,6 +1877,7 @@ private:
                     legalMoves.emplace_back(encodeSq(kingSq, to), kingChar);
             }
         }
+        occupied ^= myKing;
 
         // Castling
         if (!capturesOnly) {

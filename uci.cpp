@@ -242,22 +242,19 @@ class Uci {
             } else {
                 cout << board.getBoardEval() << endl;
             }
-        } else if (tokens[0] == "legal") {
-            bool capturesOnly = false;
-            if (tokens.size() > 1 && tokens[1] == "capture") {
-                capturesOnly = true;
-            }
-            MoveList legalMoveList;
-            board.getLegalMoves(legalMoveList);
-            for(auto& m : legalMoveList) {
+        } else if (tokens[0] == "legal" || tokens[0] == "pseudolegal") {
+            bool filterIllegal = (tokens[0] == "legal");
+            MoveList moveList;
+            board.getLegalMoves(moveList, filterIllegal);
+            for(auto& m : moveList) {
                 cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
 
             cout << "----ordered moves----" << endl;
             uint16_t noMove = MOVE_NONE;
             search.setBoard(board);
-            search.scoreMoves(legalMoveList, noMove, noMove, noMove);
-            for(auto& m : legalMoveList) {
+            search.scoreMoves(moveList, noMove, noMove, noMove);
+            for(auto& m : moveList) {
                 cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }
 
