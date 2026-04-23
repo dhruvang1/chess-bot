@@ -4,13 +4,25 @@
 #include <cstdint>
 #include <format>
 #include <unordered_map>
-#include "move.h"
-#include "staticEvals.h"
-#include "magic_constants.h"
+#include "move.hpp"
+#include "staticEvals.hpp"
+#include "magic_constants.hpp"
 #include "hash.cpp"
-#include "nnue.h"
+#include "nnue.hpp"
 
 using namespace std;
+
+// Per-(side × kingSq) cached accumulator for king bucket refreshes.
+// On a king move that changes the bucket, XOR current bitboards against
+// the cached snapshot to find only the diff, then apply that to the cached
+// accumulator instead of rebuilding from scratch.  Amortises full-rebuild
+// cost: typically 1-3 feature ops instead of ~30.
+struct alignas(64) BucketCacheEntry {
+    int16_t acc[512]; // NNUE_HIDDEN; static_assert below keeps this in sync
+    uint64_t bitboards[12]; // W:P,N,B,R,Q,K  B:P,N,B,R,Q,K
+    bool valid = false;
+};
+static_assert(NNUE_HIDDEN == 512, "update BucketCacheEntry::acc size to match NNUE_HIDDEN");
 
 // Lazy accumulator stack: processMove() stores feature deltas per ply,
 // getBoardEval() applies them on demand. undoMove() is completely free of
@@ -1161,6 +1173,69 @@ public:
         return ans;
     }
 
+    inline void snapshotBitboards(uint64_t* bbs) const {
+        bbs[0] = whitePawns;   bbs[1] = whiteKnights; bbs[2] = whiteBishops;
+        bbs[3] = whiteRooks;   bbs[4] = whiteQueens;   bbs[5] = whiteKing;
+        bbs[6] = blackPawns;   bbs[7] = blackKnights;  bbs[8] = blackBishops;
+        bbs[9] = blackRooks;   bbs[10] = blackQueens;   bbs[11] = blackKing;
+    }
+
+    // Feature index for one perspective without computing the other.
+    inline int featureIdxForSide(int side, bool pieceIsWhite, int pieceType, int sq, int kingSq) const {
+        if (side == 0) {
+            int base = (pieceIsWhite ? 0 : 384) + pieceType * 64 + sq;
+            return 768 * kingBucket(kingSq) + (base ^ kingFlip(kingSq));
+        } else {
+            int bkFlipped = kingSq ^ 56;
+            int base = (pieceIsWhite ? 384 : 0) + pieceType * 64 + (sq ^ 56);
+            return 768 * kingBucket(bkFlipped) + (base ^ kingFlip(bkFlipped));
+        }
+    }
+
+    // King bucket refresh via diff against cached bitboards.
+    // Writes correct accumulator for (side, kingSq) to outAcc and updates the cache.
+    inline void bucketCacheRefresh(int side, int kingSq, int16_t* outAcc) {
+        auto& entry = bucketCache[side][kingSq];
+        uint64_t currentBBs[12];
+        snapshotBitboards(currentBBs);
+
+        if (!entry.valid) {
+            memcpy(outAcc, nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
+            for (int bbIdx = 0; bbIdx < 12; bbIdx++) {
+                bool pieceIsWhite = (bbIdx < 6);
+                int pieceType = pieceIsWhite ? bbIdx : bbIdx - 6;
+                uint64_t bb = currentBBs[bbIdx];
+                while (bb) {
+                    int sq = __builtin_ctzll(bb);
+                    bb &= bb - 1;
+                    accAdd(outAcc, featureIdxForSide(side, pieceIsWhite, pieceType, sq, kingSq));
+                }
+            }
+        } else {
+            memcpy(outAcc, entry.acc, NNUE_HIDDEN * sizeof(int16_t));
+            for (int bbIdx = 0; bbIdx < 12; bbIdx++) {
+                bool pieceIsWhite = (bbIdx < 6);
+                int pieceType = pieceIsWhite ? bbIdx : bbIdx - 6;
+                uint64_t added   = currentBBs[bbIdx] & ~entry.bitboards[bbIdx];
+                uint64_t removed = entry.bitboards[bbIdx] & ~currentBBs[bbIdx];
+                while (added) {
+                    int sq = __builtin_ctzll(added);
+                    added &= added - 1;
+                    accAdd(outAcc, featureIdxForSide(side, pieceIsWhite, pieceType, sq, kingSq));
+                }
+                while (removed) {
+                    int sq = __builtin_ctzll(removed);
+                    removed &= removed - 1;
+                    accSub(outAcc, featureIdxForSide(side, pieceIsWhite, pieceType, sq, kingSq));
+                }
+            }
+        }
+
+        memcpy(entry.acc, outAcc, NNUE_HIDDEN * sizeof(int16_t));
+        memcpy(entry.bitboards, currentBBs, sizeof(currentBBs));
+        entry.valid = true;
+    }
+
     // Full accumulator rebuild from current board[]. Requires both kings on the board.
     // NOTE: iterate board[] directly, NOT the `occupied` bitboard. `occupied` is only
     // recomputed after movePieceEval returns (processMove line ~352), so it is stale
@@ -1183,39 +1258,34 @@ public:
         }
         entry.correct[0] = entry.correct[1] = true;
         evalCalculated = false;
+
+        // Prime bucket cache so the first king move uses diff instead of full rebuild.
+        auto& wce = bucketCache[0][wKingSq];
+        memcpy(wce.acc, entry.acc[0], NNUE_HIDDEN * sizeof(int16_t));
+        snapshotBitboards(wce.bitboards);
+        wce.valid = true;
+
+        auto& bce = bucketCache[1][bKingSq];
+        memcpy(bce.acc, entry.acc[1], NNUE_HIDDEN * sizeof(int16_t));
+        snapshotBitboards(bce.bitboards);
+        bce.valid = true;
     }
 
     // Single-perspective rebuilds — used when only one king moved.
-    // Only the perspective whose king moved needs a full rebuild; the other
-    // perspective's features are unchanged (piece sq and opponent king sq
-    // are identical) so only the king piece itself gets an incremental update.
+    // Only the perspective whose king moved needs a refresh; the other
+    // perspective's features are unchanged so only the king itself gets
+    // an incremental delta (handled by the caller via appendFusedW/B).
     inline void rebuildWhiteAcc() {
         int wKingSq = __builtin_ctzll(whiteKing);
-        int bKingSq = __builtin_ctzll(blackKing);
         auto& entry = las.accStack[pendingPly];
-        memcpy(entry.acc[0], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
-        for (int sq = 0; sq < 64; sq++) {
-            if (board[sq] != ' ') {
-                int wi, bi;
-                getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
-                accAdd(entry.acc[0], wi);
-            }
-        }
+        bucketCacheRefresh(0, wKingSq, entry.acc[0]);
         entry.correct[0] = true;
     }
 
     inline void rebuildBlackAcc() {
-        int wKingSq = __builtin_ctzll(whiteKing);
         int bKingSq = __builtin_ctzll(blackKing);
         auto& entry = las.accStack[pendingPly];
-        memcpy(entry.acc[1], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
-        for (int sq = 0; sq < 64; sq++) {
-            if (board[sq] != ' ') {
-                int wi, bi;
-                getFeatureIndices(board[sq], sq, wKingSq, bKingSq, wi, bi);
-                accAdd(entry.acc[1], bi);
-            }
-        }
+        bucketCacheRefresh(1, bKingSq, entry.acc[1]);
         entry.correct[1] = true;
     }
 
@@ -1319,6 +1389,8 @@ private:
     }
 
     int evalTable[256][2][64]{};
+
+    BucketCacheEntry bucketCache[2][64]{};
 
     uint64_t boardHash = 0;
     std::unordered_map<uint64_t, int> hashHistory;

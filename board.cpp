@@ -1,8 +1,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include "move.h"
-#include "staticEvals.h"
+#include "move.hpp"
+#include "staticEvals.hpp"
 #include "hash.cpp"
 
 using namespace std;

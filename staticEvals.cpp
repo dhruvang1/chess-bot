@@ -1,4 +1,4 @@
-#include "staticEvals.h"
+#include "staticEvals.hpp"
 
 int mg_pawn_table[64] = {
     0,   0,   0,   0,   0,   0,  0,   0,
