@@ -1,6 +1,9 @@
-# Chess Engine
+# Chess Engine - Simple Bot
 
-A chess engine written in C++20 with UCI protocol support. Estimated ~2600 Elo. Designed to run with [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) or any UCI-compatible GUI.
+A chess engine written in C++20 with UCI protocol support. Designed to run with [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot) or any UCI-compatible GUI. It plays under the handle [simple-bot](https://lichess.org/@/simple-bot) on lichess.
+
+Simple Bot prides itself on using the original self-generated dataset for its neural network. No other engine evaluations or dataset (Stockfish, Leela, etc.) were used. 
+Early iterations used Lichess games to generate diversity.
 
 ## Architecture
 
@@ -44,17 +47,13 @@ A chess engine written in C++20 with UCI protocol support. Estimated ~2600 Elo. 
 
 ## Evaluation
 
-**NNUE** (HalfKAv2 HM, 24576→512→1, SCReLU, dual perspective, 8 output buckets)
-- Feature set: HalfKAv2 with horizontal mirroring — 768 features × 32 king buckets = 24,576 inputs per perspective
-- King mirroring: when king is on files e–h all piece squares are flipped, halving the king-square dimension from 64→32
-- 8 material-count output buckets — `bucket = (popcount(occupied) − 2) / 4`
-- Dual perspective: STM + NSTM accumulators concatenated (effectively 1024-wide hidden layer)
-- Activation: SCReLU — `clamp(x, 0, QA)² × weight`, computed with int32 arithmetic
-- Quantization: QA=255, QB=64, Scale=400
-- Inference auto-vectorized with ARM NEON (SIMD) — ~1.3M NPS on Apple M-series
+**NNUE** (HalfKAv2-HM, 12288→1024→8, SCReLU, dual perspective, 8 output buckets)
+- Feature set: HalfKAv2 with horizontal mirroring — 768 features × 16 mirrored king buckets = 12,288 inputs per perspective
+- King mirroring: when king is on files e–h all piece squares are flipped, halving the king-square dimension from 64→32; 32 post-mirror squares mapped to 16 buckets
+- 8 material-count output buckets
 - Accumulators updated incrementally on make; reversed incrementally on undo (no copy overhead)
 - Network loaded via `setoption name NNUEPath value <path>`
-- Trained with [bullet](https://github.com/jw1912/bullet) on self-play
+- Trained with [bullet](https://github.com/jw1912/bullet)
 
 ## Build
 

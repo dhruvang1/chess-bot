@@ -15,10 +15,10 @@ int main(int argc, char* argv[]) {
             nnuePath = argv[++i];
         }
     }
-    Uci uci(datagen, nnuePath);
+    auto* uci = new Uci(datagen, nnuePath);
     while(true) {
         string msg;
         getline(cin, msg);
-        uci.handle(msg);
+        uci->handle(msg);
     }
 }

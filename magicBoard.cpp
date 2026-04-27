@@ -18,11 +18,11 @@ using namespace std;
 // accumulator instead of rebuilding from scratch.  Amortises full-rebuild
 // cost: typically 1-3 feature ops instead of ~30.
 struct alignas(64) BucketCacheEntry {
-    int16_t acc[512]; // NNUE_HIDDEN; static_assert below keeps this in sync
+    int16_t acc[1024]; // NNUE_HIDDEN; static_assert below keeps this in sync
     uint64_t bitboards[12]; // W:P,N,B,R,Q,K  B:P,N,B,R,Q,K
     bool valid = false;
 };
-static_assert(NNUE_HIDDEN == 512, "update BucketCacheEntry::acc size to match NNUE_HIDDEN");
+static_assert(NNUE_HIDDEN == 1024, "update BucketCacheEntry::acc size to match NNUE_HIDDEN");
 
 // Lazy accumulator stack: processMove() stores feature deltas per ply,
 // getBoardEval() applies them on demand. undoMove() is completely free of
@@ -1369,19 +1369,45 @@ private:
             getFeatureIndices(piece, fromSq, wKingSq, bKingSq, wi_from, bi_from);
             getFeatureIndices(piece, toSq,   wKingSq, bKingSq, wi_to,   bi_to);
             if (isKing(piece)) {
-                // King bitboard is already updated before this call.
-                // The mover's perspective is eagerly rebuilt (all features change with new
-                // king bucket/flip). The other perspective gets a single fused delta:
-                //   quiet king move → QUIET shape  (sub king_from, add king_to)
-                //   king capture    → CAPTURE shape (sub cap, sub king_from, add king_to)
+                // King bitboard is already updated before this call, so wKingSq/bKingSq
+                // already reflect the new king position.
+                //
+                // If the king stays in the same bucket and flip, all non-king piece
+                // features are unchanged (they share the same 768*bucket + flip offset).
+                // Only the king's own feature needs an incremental sub/add.
+                // If the bucket or flip changes, every feature in that perspective changes
+                // and a full rebuild is required.
+                //
+                // The opposite perspective always only needs an incremental update for the
+                // king piece itself (its square changed), since the other king sq is unchanged.
                 if (isPieceOfColor(WHITE, piece)) {
-                    rebuildWhiteAcc(); // eager: writes accStack[pendingPly].acc[0], sets correct[0]=true
+                    bool bucketChange = kingBucket(fromSq) != kingBucket(wKingSq)
+                                     || kingFlip(fromSq)   != kingFlip(wKingSq);
+                    if (bucketChange)
+                        rebuildWhiteAcc();
+                    else {
+                        if (capW == -1)
+                            las.appendFusedW(pendingPly, wi_from, -1,    wi_to);
+                        else
+                            las.appendFusedW(pendingPly, capW,   wi_from, wi_to);
+                    }
                     if (capB == -1)
                         las.appendFusedB(pendingPly, bi_from, -1,    bi_to);
                     else
                         las.appendFusedB(pendingPly, capB,   bi_from, bi_to);
                 } else {
-                    rebuildBlackAcc(); // eager: writes accStack[pendingPly].acc[1], sets correct[1]=true
+                    int bkFrom = fromSq ^ 56;
+                    int bkTo   = bKingSq ^ 56;
+                    bool bucketChange = kingBucket(bkFrom) != kingBucket(bkTo)
+                                     || kingFlip(bkFrom)   != kingFlip(bkTo);
+                    if (bucketChange)
+                        rebuildBlackAcc();
+                    else {
+                        if (capB == -1)
+                            las.appendFusedB(pendingPly, bi_from, -1,    bi_to);
+                        else
+                            las.appendFusedB(pendingPly, capB,   bi_from, bi_to);
+                    }
                     if (capW == -1)
                         las.appendFusedW(pendingPly, wi_from, -1,    wi_to);
                     else

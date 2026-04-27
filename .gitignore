@@ -4,6 +4,7 @@ build/**
 .idea/**
 Improvements.md
 
+book/polyglot
 releases/
 scripts/
 nnue/quantised-v*
