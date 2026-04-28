@@ -652,13 +652,14 @@ class Search {
                 continue;
             }
 
-            // futility pruning: at depth 1-2, if static eval is so far below alpha that
-            // even a significant material swing can't raise it, skip quiet moves
-            static constexpr int futilityMargin[] = {0, 150, 300};
-            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && i > 0
+            // futility pruning: if static eval is so far below alpha that even a significant
+            // material swing can't raise it, skip quiet moves.
+            // Improving → position trending up, might recover → add margin (prune less).
+            static constexpr int futilityMargin[] = {0, 150, 300, 450, 600};
+            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && i > 0
                 && alpha == beta - 1
                 && abs(alpha) < BoardType::mateThreshold
-                && staticEval + futilityMargin[depth] <= alpha) {
+                && staticEval + futilityMargin[depth] + (improving ? 80 : 0) <= alpha) {
                 futilePrune++;
                 continue;
             }
@@ -686,7 +687,7 @@ class Search {
                 bool doPvs = true;
                 bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (i >= 3 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                if (i >= 2 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(i, 63)];
                     if (pvNode) R -= 1;
 
