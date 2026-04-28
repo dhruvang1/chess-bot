@@ -86,7 +86,6 @@ class Search {
     int QSEARCH_MAX_DEPTH = 10;
     int START_DEPTH = 1;
     int iterDepth = 0;  // depth of the current iteration; used to cap total extension depth
-    int BASE_NULL_MOVE_REDUCTION = 3;
     high_resolution_clock::time_point startTime;
     bool shouldStop = false;
     long softTimeLimitMs{};
@@ -404,10 +403,11 @@ class Search {
         return bestMove;
     }
 
-    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ', uint16_t excludedMove = MOVE_NONE) {
+    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, bool cutNode = false, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ', uint16_t excludedMove = MOVE_NONE) {
         nodes++;
         pvLength[ply] = 0;
         evalStack[ply] = NEGATIVE_NUM;  // default sentinel; overwritten below if not in check
+        bool pvNode = (alpha + 1 < beta);
 
         if (shouldStop) return 0;
 
@@ -451,10 +451,11 @@ class Search {
                     ttMove = ttEntry->bestMove;
                 }
             }
-        } else if (depth > 3 && excludedMove == MOVE_NONE) {
-            // internal iterative reduction
-            depth -= 1;
         }
+
+        // IIR: no TT move means poor move ordering — reduce depth to avoid wasting a deep search
+        if (depth > 3 && ttMove == MOVE_NONE && excludedMove == MOVE_NONE)
+            depth -= 1;
 
         // Enter qsearch when depth is exhausted, or when the ply cap is hit.
         // The ply cap (iterDepth + 8) bounds total extensions across all types
@@ -512,7 +513,7 @@ class Search {
             && ttEntry->flag != TTFlagAlpha
             && abs(ttEval) < BoardType::mateThreshold) {
             int sBeta = ttEval - 2 * depth;
-            int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, prevMove, prevPiece, ttMove);
+            int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, true, prevMove, prevPiece, ttMove);
             if (!shouldStop && sScore < sBeta)
                 singularExtension = (sScore < sBeta - depth * 3) ? 2 : 1;
         }
@@ -567,10 +568,10 @@ class Search {
         }
 
         // null move pruning (reuses staticEval computed above — no extra getBoardEval call)
-        if (nullAllowed && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && staticEval >= beta) {
+        if (nullAllowed && !pvNode && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && staticEval >= beta) {
             nullAttempt++;
             board->processNullMove();
-            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (BASE_NULL_MOVE_REDUCTION + (depth - 1)/5), ply + 1, false);
+            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (3 + depth / 3), ply + 1, false, !cutNode);
             board->undoNullMove();
 
             if (nullEval >= beta) {
@@ -595,7 +596,7 @@ class Search {
                 if (m.move == excludedMove) continue;
                 if (board->see(m) < PROBCUT_MARGIN) continue;
                 board->processMove(m.move);
-                int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, m.move, m.movePiece);
+                int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, true, m.move, m.movePiece);
                 board->undoMove();
                 if (pcEval >= pcBeta) {
                     probcutPrune++;
@@ -620,8 +621,8 @@ class Search {
 
         // LMP threshold: keep high when improving (position dynamic, search more moves),
         // halve when not improving (position stagnant/falling, prune more aggressively).
-        static constexpr int lmpThresholdImp[]    = {0, 8, 14};
-        static constexpr int lmpThresholdNotImp[] = {0, 4, 7};
+        static constexpr int lmpThresholdImp[]    = {0, 8, 14, 22};
+        static constexpr int lmpThresholdNotImp[] = {0, 4, 7, 11};
         const int* lmpThreshold = improving ? lmpThresholdImp : lmpThresholdNotImp;
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
@@ -634,7 +635,7 @@ class Search {
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
             // late move pruning: at shallow depth, skip late quiet moves
-            if (ply > 0 && isQuiet && !inCheck && depth <= 2 && i >= lmpThreshold[depth]
+            if (ply > 0 && isQuiet && !inCheck && depth <= 3 && i >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
                 continue;
@@ -642,7 +643,7 @@ class Search {
 
             // history-gated LMP: at depth 3-4, skip late quiet moves with negative history.
             // LMP thresholds are higher than LMR (i >= 3) since pruning is irreversible.
-            static constexpr int lmpHistThreshold[] = {0, 0, 0, 20, 30};
+            static constexpr int lmpHistThreshold[] = {0, 0, 0, 14, 22};
             if (ply > 0 && isQuiet && !inCheck && depth >= 3 && depth <= 4
                 && i >= lmpHistThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove
@@ -679,25 +680,27 @@ class Search {
             int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
             if (i == 0) {
-                eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, m.move, m.movePiece);
+                // first child: PV child if pvNode, else expected all-node (parent is cut → child is all)
+                eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, pvNode ? false : !cutNode, m.move, m.movePiece);
             } else {
                 bool doPvs = true;
                 bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
                 // inCheck refers to pre-move position: don't reduce when responding to check
                 if (i >= 3 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                     int R = lmrTable[min(depth, 63)][min(i, 63)];
-                    if (alpha != beta - 1) R -= 1; // reduce less at PV nodes
+                    if (pvNode) R -= 1;
 
                     if (m.isLosingCapture) R += 1;
                     // Improving: position is trending up, eval is reliable — search deeper.
                     if (improving) R--;
+                    R += cutNode;  // at cut nodes, non-first moves are very unlikely to be best
                     int hist = history[(int)m.movePiece][toSq(m.move)];
                     // Clamp the history contribution to [-2, +2] so a single piece-square
                     // combination with extreme negative history can't inflate R beyond reason.
                     R -= max(hist / 300, -2);
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
-                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, m.move, m.movePiece);
+                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, true, m.move, m.movePiece);
                     if (eval > alpha) {
                         lmrFailure++;
                     } else {
@@ -707,10 +710,10 @@ class Search {
                 }
 
                 if (doPvs) {
-                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
+                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, !cutNode, m.move, m.movePiece);
                     if (eval > alpha && eval < beta) {
                         pvsFailure++;
-                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, m.move, m.movePiece);
+                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, false, m.move, m.movePiece);
                     } else {
                         pvsSuccess++;
                     }
