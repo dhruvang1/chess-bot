@@ -47,9 +47,15 @@ class Search {
     uint16_t countermoves[128][64] = {};
 
     // Continuation history: contHist[prevPieceIdx][prevToSq][curPieceIdx][curToSq]
-    // Tracks which moves are good given what the previous move was — a 1-ply context window
-    // on top of main history. Uses compact piece indices 0-11 to keep the table at ~2.3MB.
+    // 1-ply: opponent's last move as context. 2-ply: our own last move as context.
+    // Uses compact piece indices 0-11 to keep each table at ~2.3MB.
     int contHist[12][64][12][64] = {};
+    int contHist2[12][64][12][64] = {};
+
+    // Per-ply move stack: stores the move and piece made at each ply so any depth of
+    // continuation history can be looked up without threading params through the call stack.
+    uint16_t moveStack[MAX_PLY] = {};
+    char pieceStack[MAX_PLY] = {};
 
     // Capture history: captHist[movingPieceIdx][toSq][capturedPieceType]
     // Separates capture ordering from quiet ordering. capturedPieceType = pieceIdx(cap)/2
@@ -403,11 +409,16 @@ class Search {
         return bestMove;
     }
 
-    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, bool cutNode = false, uint16_t prevMove = MOVE_NONE, char prevPiece = ' ', uint16_t excludedMove = MOVE_NONE) {
+    int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, bool cutNode = false, uint16_t excludedMove = MOVE_NONE) {
         nodes++;
         pvLength[ply] = 0;
         evalStack[ply] = NEGATIVE_NUM;  // default sentinel; overwritten below if not in check
         bool pvNode = (alpha + 1 < beta);
+
+        uint16_t prevMove  = (ply >= 1) ? moveStack[ply - 1] : MOVE_NONE;
+        char     prevPiece = (ply >= 1) ? pieceStack[ply - 1] : ' ';
+        uint16_t prev2Move  = (ply >= 2) ? moveStack[ply - 2] : MOVE_NONE;
+        char     prev2Piece = (ply >= 2) ? pieceStack[ply - 2] : ' ';
 
         if (shouldStop) return 0;
 
@@ -513,7 +524,7 @@ class Search {
             && ttEntry->flag != TTFlagAlpha
             && abs(ttEval) < BoardType::mateThreshold) {
             int sBeta = ttEval - 2 * depth;
-            int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, true, prevMove, prevPiece, ttMove);
+            int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, true, ttMove);
             if (!shouldStop && sScore < sBeta)
                 singularExtension = (sScore < sBeta - depth * 3) ? 2 : 1;
         }
@@ -537,8 +548,10 @@ class Search {
             }
         } else {
             board->getLegalMoves(legalMoves, ply + depth <= 4);
-            int prevSq = (prevMove != MOVE_NONE) ? toSq(prevMove) : -1;
-            scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove, prevPiece, prevSq);
+            int prevSq  = (prevMove  != MOVE_NONE) ? toSq(prevMove)  : -1;
+            int prev2Sq = (prev2Move != MOVE_NONE) ? toSq(prev2Move) : -1;
+            scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove,
+                       prevPiece, prevSq, prev2Piece, prev2Sq);
         }
 
         if (ply == 0 && isManual()) {
@@ -570,6 +583,8 @@ class Search {
         // null move pruning (reuses staticEval computed above — no extra getBoardEval call)
         if (nullAllowed && !pvNode && board->getGamePhase() > 0 && depth > 2 && abs(beta) < BoardType::mateThreshold && staticEval >= beta) {
             nullAttempt++;
+            moveStack[ply] = MOVE_NONE;
+            pieceStack[ply] = ' ';
             board->processNullMove();
             int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (3 + depth / 3), ply + 1, false, !cutNode);
             board->undoNullMove();
@@ -595,8 +610,10 @@ class Search {
                 if (!m.isCapture && !m.isPromotion) continue;
                 if (m.move == excludedMove) continue;
                 if (board->see(m) < PROBCUT_MARGIN) continue;
+                moveStack[ply] = m.move;
+                pieceStack[ply] = m.movePiece;
                 board->processMove(m.move);
-                int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, true, m.move, m.movePiece);
+                int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, true);
                 board->undoMove();
                 if (pcEval >= pcBeta) {
                     probcutPrune++;
@@ -677,12 +694,14 @@ class Search {
             }
 
             int nodesBefore = (ply == 0) ? nodes : 0;
+            moveStack[ply] = m.move;
+            pieceStack[ply] = m.movePiece;
             board->processMove(m.move);
             int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
             if (i == 0) {
                 // first child: PV child if pvNode, else expected all-node (parent is cut → child is all)
-                eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, pvNode ? false : !cutNode, m.move, m.movePiece);
+                eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, pvNode ? false : !cutNode);
             } else {
                 bool doPvs = true;
                 bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
@@ -701,7 +720,7 @@ class Search {
                     R -= max(hist / 300, -2);
                     R = max(R, 1);
                     int newDepth = max(depth - 1 - R, 1);
-                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, true, m.move, m.movePiece);
+                    eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, true);
                     if (eval > alpha) {
                         lmrFailure++;
                     } else {
@@ -711,10 +730,10 @@ class Search {
                 }
 
                 if (doPvs) {
-                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, !cutNode, m.move, m.movePiece);
+                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, !cutNode);
                     if (eval > alpha && eval < beta) {
                         pvsFailure++;
-                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, false, m.move, m.movePiece);
+                        eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, false);
                     } else {
                         pvsSuccess++;
                     }
@@ -756,7 +775,7 @@ class Search {
                     for (int q = 0; q < numTriedQuiets - 1; q++) {
                         history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])] -= bonus;
                     }
-                    // Update continuation history with the same bonus/malus.
+                    // Update continuation history (1-ply and 2-ply) with the same bonus/malus.
                     if (prevMove != MOVE_NONE) {
                         int pi  = pieceIdx(prevPiece);
                         int psq = toSq(prevMove);
@@ -766,6 +785,15 @@ class Search {
                         }
                         countermoves[(int)prevPiece][psq] = m.move;
                     }
+                    if (prev2Move != MOVE_NONE) {
+                        int p2i  = pieceIdx(prev2Piece);
+                        int p2sq = toSq(prev2Move);
+                        contHist2[p2i][p2sq][ci][csq] += bonus;
+                        for (int q = 0; q < numTriedQuiets - 1; q++) {
+                            contHist2[p2i][p2sq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])] -= bonus;
+                        }
+                    }
+
                 } else if (m.isCapture) {
                     int capType = pieceIdx(m.capturePiece) / 2;
                     captHist[pieceIdx(m.movePiece)][toSq(m.move)][capType] += bonus;
@@ -939,7 +967,12 @@ class Search {
             for (auto& b : a)
                 for (auto& c : b)
                     for (auto& val : c)
-                        val >>= 1;
+                        val = val * 3 / 4;
+        for (auto& a : contHist2)
+            for (auto& b : a)
+                for (auto& c : b)
+                    for (auto& val : c)
+                        val = val * 3 / 4;
         for (auto& a : captHist)
             for (auto& b : a)
                 for (auto& val : b)
@@ -956,11 +989,14 @@ class Search {
     //   6. Quiet moves     — ranked by history + 1-ply continuation history
     //   7. Losing captures — losing exchanges by SEE, ranked by MVV-LVA
     void scoreMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
-                      uint16_t counterMove = MOVE_NONE, char prevPc = ' ', int prevSq = -1) {
+                      uint16_t counterMove = MOVE_NONE,
+                      char prevPc = ' ', int prevSq = -1,
+                      char prev2Pc = ' ', int prev2Sq = -1) {
         const int* pv = board->pieceValue;
-        // Precompute whether we have a valid previous-move context for contHist lookup.
-        bool hasContHist = (prevPc != ' ' && prevSq >= 0);
-        int pi = hasContHist ? pieceIdx(prevPc) : 0;
+        bool hasContHist  = (prevPc  != ' ' && prevSq  >= 0);
+        bool hasCont2Hist = (prev2Pc != ' ' && prev2Sq >= 0);
+        int pi  = hasContHist  ? pieceIdx(prevPc)  : 0;
+        int p2i = hasCont2Hist ? pieceIdx(prev2Pc) : 0;
         for (auto& m : legalMoves) {
             if (m.move == ttMove)               { m.score = 60000 * 20000; continue; }
             if (m.isPromotion)                  { m.score = 50000 * 20000; continue; }
@@ -979,7 +1015,8 @@ class Search {
                 // Both tables use the same update magnitude (depth²) and aging (>>= 1),
                 // so they're on the same scale and can be summed directly.
                 m.score = history[(int)m.movePiece][sq]
-                        + (hasContHist ? contHist[pi][prevSq][ci][sq] : 0);
+                        + (hasContHist  ? contHist [pi ][prevSq ][ci][sq] : 0)
+                        + (hasCont2Hist ? contHist2[p2i][prev2Sq][ci][sq] : 0);
             }
         }
         // No sort here — negamax uses selection sort to pick best move lazily
