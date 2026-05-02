@@ -704,6 +704,7 @@ class Search {
                 eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, pvNode ? false : !cutNode);
             } else {
                 bool doPvs = true;
+                int nextDepth = depth - 1;
                 bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
                 // inCheck refers to pre-move position: don't reduce when responding to check
                 if (i >= 2 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
@@ -723,6 +724,8 @@ class Search {
                     eval = -negamax(-alpha - 1, -alpha, newDepth, ply + 1, true, true);
                     if (eval > alpha) {
                         lmrFailure++;
+                        // Re-search deeper if result was surprisingly good (score well above current best).
+                        nextDepth = depth - 1 + (eval > maxEval + 35);
                     } else {
                         doPvs = false;
                         lmrSuccess++;
@@ -730,7 +733,7 @@ class Search {
                 }
 
                 if (doPvs) {
-                    eval = -negamax(-alpha - 1, -alpha, depth - 1, ply + 1, true, !cutNode);
+                    eval = -negamax(-alpha - 1, -alpha, nextDepth, ply + 1, true, !cutNode);
                     if (eval > alpha && eval < beta) {
                         pvsFailure++;
                         eval = -negamax(-beta, -alpha, depth - 1, ply + 1, true, false);

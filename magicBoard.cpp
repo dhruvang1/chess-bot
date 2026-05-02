@@ -1015,7 +1015,7 @@ public:
 
     bool isPositionRepeated() {
         auto it = hashHistory.find(boardHash);
-        return it != hashHistory.end() && it->second > 1;
+        return it != hashHistory.end() && it->second > 2;
     }
 
     bool isFiftyMoveDraw() const {
