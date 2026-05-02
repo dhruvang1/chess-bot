@@ -87,6 +87,7 @@ class Search {
     int histLmpPrune = 0;
     int futilePrune = 0;
     int probcutPrune = 0;
+    int seePrune = 0;
     int qCacheHit = 0;
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
@@ -160,6 +161,7 @@ class Search {
         histLmpPrune = 0;
         futilePrune = 0;
         probcutPrune = 0;
+        seePrune = 0;
         qCacheHit = 0;
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
@@ -229,7 +231,7 @@ class Search {
              << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << " lmr% " << (lmrSuccess + lmrFailure > 0 ? (100 * lmrSuccess) / (lmrSuccess + lmrFailure) : 0) << endl;
-        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << " seePrune " << seePrune << endl;
         cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
@@ -681,6 +683,19 @@ class Search {
                 continue;
             }
 
+            // SEE pruning: skip moves that lose too much material in the exchange.
+            // Only call SEE if the destination is actually defended (isSquareThreatened gate)
+            // to avoid the expensive getAttackersTo call on uncontested squares.
+            if (ply > 0 && !inCheck && depth <= 6 && i > 0) {
+                int seeThreshold = isQuiet ? -50 * depth : -100 * depth;
+                BoardType::Color opp = (board->turn == BoardType::WHITE) ? BoardType::BLACK : BoardType::WHITE;
+                if (board->isSquareAttackedByColor(toSq(m.move), opp)
+                    && board->see(m) < seeThreshold) {
+                    seePrune++;
+                    continue;
+                }
+            }
+
             if (isQuiet && numTriedQuiets < 64) {
                 triedQuiets[numTriedQuiets] = m.move;
                 triedQuietPieces[numTriedQuiets] = m.movePiece;
@@ -863,15 +878,21 @@ class Search {
 
         int maxEval = alpha;
         int delta = 300;
-        for(const auto& m: legalMoves) {
+        for(int i = 0; i < legalMoves.size(); i++) {
+            for (int j = i + 1; j < legalMoves.size(); j++) {
+                if (legalMoves[j].score > legalMoves[i].score)
+                    std::swap(legalMoves[i], legalMoves[j]);
+            }
+            const Move& m = legalMoves[i];
+
             // delta pruning: even winning this piece cleanly can't raise alpha
             if (m.isCapture && (boardEval + abs(board->pieceValue[m.capturePiece]) + delta < alpha)) {
                 deltaPrune++;
                 continue;
             }
 
-            // SEE pruning: this capture loses material in the exchange
-            if (m.isCapture && board->see(m) < 0) {
+            // SEE pruning: losing captures were already identified in scoreMoves
+            if (m.isCapture && m.isLosingCapture) {
                 continue;
             }
 

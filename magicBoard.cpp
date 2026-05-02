@@ -978,6 +978,12 @@ public:
 
         gain[depth] = abs(pieceValue[target]);
 
+        // Precompute slider masks for incremental attacker updates inside the loop.
+        // Removing a pawn/bishop/queen can uncover a diagonal slider; removing a rook/queen
+        // can uncover a straight slider. Knights and kings never block sliders.
+        const uint64_t diagonals = whiteBishops | blackBishops | whiteQueens | blackQueens;
+        const uint64_t parallels = whiteRooks  | blackRooks  | whiteQueens | blackQueens;
+
         uint64_t attackers = getAttackersTo(toSq, occ) & occ;
 
         Color sideToMove = isPieceOfColor(WHITE, attacker) ? BLACK : WHITE;
@@ -993,7 +999,13 @@ public:
             if (!attackerBB) break;
 
             occ ^= attackerBB;
-            attackers = getAttackersTo(toSq, occ) & occ;
+            // Incrementally update only the slider directions that the removed piece could uncover,
+            // instead of recomputing all attackers from scratch each iteration.
+            if (attackerBB & (whitePawns | blackPawns | diagonals))
+                attackers |= getBishopAttacks(toSq, occ) & diagonals;
+            if (attackerBB & parallels)
+                attackers |= getRookAttacks(toSq, occ) & parallels;
+            attackers &= occ;
 
             sideToMove = flipColor(sideToMove);
         }
