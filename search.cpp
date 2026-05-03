@@ -88,6 +88,7 @@ class Search {
     int futilePrune = 0;
     int probcutPrune = 0;
     int seePrune = 0;
+    int aspirationFails = 0;
     int qCacheHit = 0;
     int bestMoveNodes = 0;
     int QSEARCH_MAX_DEPTH = 10;
@@ -162,6 +163,7 @@ class Search {
         futilePrune = 0;
         probcutPrune = 0;
         seePrune = 0;
+        aspirationFails = 0;
         qCacheHit = 0;
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
@@ -224,14 +226,15 @@ class Search {
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
 
         long ms = duration.count();
-        long nps = ms > 0 ? (long)nodes * 1000 / ms : 0;
-        cout << "info depth " << depthEvaluated << " nodes " << nodes << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
+        long totalNodes = nodes + qNodes;
+        long nps = ms > 0 ? totalNodes * 1000 / ms : 0;
+        cout << "info depth " << depthEvaluated << " nodes " << totalNodes << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " qnodes% " << (nodes + qNodes > 0 ? (100 * qNodes) / (nodes + qNodes) : 0) << endl;
         cout << "info nullAttempt " << nullAttempt << " nullCutoff " << nullSuccess
              << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
         cout << "info pvs " << pvsSuccess << " " << pvsFailure << endl;
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << " lmr% " << (lmrSuccess + lmrFailure > 0 ? (100 * lmrSuccess) / (lmrSuccess + lmrFailure) : 0) << endl;
-        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << " seePrune " << seePrune << endl;
+        cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << " seePrune " << seePrune << " aspFail " << aspirationFails << endl;
         cout << "info qcache " << qCacheHit << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
@@ -281,18 +284,31 @@ class Search {
             const MoveList savedMoves = orderedMovesLastRound;
             int nodesAtDepthStart = nodes;
             int eval;
+            int depthAspFails = 0;
             while (true) {
                 eval = negamax(alpha, beta, depth, 0, false);
 
                 if (shouldQuit()) break;
 
                 if (eval <= alpha) {
-                    alpha = max(alpha - aspiration, NEGATIVE_NUM);
-                    aspiration *= 2;
+                    aspirationFails++;
+                    if (++depthAspFails >= 3) {
+                        alpha = NEGATIVE_NUM;
+                        beta = POSITIVE_NUM;
+                    } else {
+                        alpha = max(alpha - aspiration, NEGATIVE_NUM);
+                        aspiration *= 2;
+                    }
                     orderedMovesLastRound = savedMoves;
                 } else if (eval >= beta) {
-                    beta = min(beta + aspiration, POSITIVE_NUM);
-                    aspiration *= 2;
+                    aspirationFails++;
+                    if (++depthAspFails >= 3) {
+                        alpha = NEGATIVE_NUM;
+                        beta = POSITIVE_NUM;
+                    } else {
+                        beta = min(beta + aspiration, POSITIVE_NUM);
+                        aspiration *= 2;
+                    }
                     orderedMovesLastRound = savedMoves;
                 } else {
                     break;
