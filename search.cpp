@@ -588,7 +588,8 @@ class Search {
             moveStack[ply] = MOVE_NONE;
             pieceStack[ply] = ' ';
             board->processNullMove();
-            int nullEval = -negamax(-beta, -beta + 1, depth - 1 - (3 + depth / 3), ply + 1, false, !cutNode);
+            int R = min(4 + depth / 3, depth);
+            int nullEval = -negamax(-beta, -beta + 1, depth - R, ply + 1, false, !cutNode);
             board->undoNullMove();
 
             if (nullEval >= beta) {
@@ -687,7 +688,9 @@ class Search {
             // Only call SEE if the destination is actually defended (isSquareThreatened gate)
             // to avoid the expensive getAttackersTo call on uncontested squares.
             if (ply > 0 && !inCheck && depth <= 6 && i > 0) {
-                int seeThreshold = isQuiet ? -50 * depth : -100 * depth;
+                // Quiet SEE threshold: -50 * d * sqrt(d), precomputed for d=0..6
+                static constexpr int quietSeeThreshold[] = {0, -50, -141, -260, -400, -559, -735};
+                int seeThreshold = isQuiet ? quietSeeThreshold[depth] : -100 * depth;
                 BoardType::Color opp = (board->turn == BoardType::WHITE) ? BoardType::BLACK : BoardType::WHITE;
                 if (board->isSquareAttackedByColor(toSq(m.move), opp)
                     && board->see(m) < seeThreshold) {
