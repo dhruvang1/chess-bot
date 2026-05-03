@@ -644,6 +644,7 @@ class Search {
         static constexpr int lmpThresholdImp[]    = {0, 8, 14, 22};
         static constexpr int lmpThresholdNotImp[] = {0, 4, 7, 11};
         const int* lmpThreshold = improving ? lmpThresholdImp : lmpThresholdNotImp;
+        bool skipQuietMoves = false;
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
             for (int j = i + 1; j < legalMoves.size(); j++) {
@@ -654,6 +655,11 @@ class Search {
             if (m.move == excludedMove) continue;
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
+            if (skipQuietMoves && isQuiet) {
+                histLmpPrune++;
+                continue;
+            }
+
             // late move pruning: at shallow depth, skip late quiet moves
             if (ply > 0 && isQuiet && !inCheck && depth <= 3 && i >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
@@ -661,14 +667,11 @@ class Search {
                 continue;
             }
 
-            // history-gated LMP: at depth 3-4, skip late quiet moves with negative history.
-            // LMP thresholds are higher than LMR (i >= 3) since pruning is irreversible.
-            static constexpr int lmpHistThreshold[] = {0, 0, 0, 14, 22};
-            if (ply > 0 && isQuiet && !inCheck && depth >= 3 && depth <= 4
-                && i >= lmpHistThreshold[depth]
-                && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove
-                && history[(int)m.movePiece][toSq(m.move)] < 0) {
+            // history pruning: once a quiet move's combined history score drops below the threshold,
+            // skip all remaining quiets — they're ordered by score so all subsequent will be worse.
+            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && m.score < -100 * depth) {
                 histLmpPrune++;
+                skipQuietMoves = true;
                 continue;
             }
 
@@ -989,7 +992,7 @@ class Search {
         // Preserves relative ordering while letting fresh updates dominate.
         for (auto& row : history)
             for (auto& val : row)
-                val >>= 1;
+                val = val * 3 / 4;
         for (auto& a : contHist)
             for (auto& b : a)
                 for (auto& c : b)
