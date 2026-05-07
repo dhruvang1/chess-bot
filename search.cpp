@@ -685,7 +685,7 @@ class Search {
 
             // history pruning: once a quiet move's combined history score drops below the threshold,
             // skip all remaining quiets — they're ordered by score so all subsequent will be worse.
-            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && m.score < -100 * depth) {
+            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && i > 0 && m.score < -100 * depth) {
                 histLmpPrune++;
                 skipQuietMoves = true;
                 continue;
