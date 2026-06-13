@@ -465,12 +465,20 @@ class Search {
                 if (alpha == beta - 1) {
                     cacheHit++;
                     if (ttEntry->depth >= depth) {
-                        if (ttEntry->boundType() == TTFlagExact) {
-                            return ttEval;
-                        } else if (ttEntry->boundType() == TTFlagBeta && ttEval >= beta) {
-                            return beta;
-                        } else if (ttEntry->boundType() == TTFlagAlpha && ttEval <= alpha) {
-                            return alpha;
+                        // Don't trust TT mate scores near the leaves: the score may have
+                        // been produced via pseudo-legal move gen (stalemate misread as mate).
+                        // Falling through forces getLegalMoves(filterIllegal=true) to run,
+                        // which correctly identifies stalemate. ttMove is still kept for ordering.
+                        bool mateScore = abs(ttEval) >= BoardType::mateThreshold;
+                        bool nearLeaf  = (ply + depth <= 4);
+                        if (!(mateScore && nearLeaf)) {
+                            if (ttEntry->boundType() == TTFlagExact) {
+                                return ttEval;
+                            } else if (ttEntry->boundType() == TTFlagBeta && ttEval >= beta) {
+                                return beta;
+                            } else if (ttEntry->boundType() == TTFlagAlpha && ttEval <= alpha) {
+                                return alpha;
+                            }
                         }
                     }
                     ttMove = ttEntry->bestMove;
