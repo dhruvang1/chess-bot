@@ -4,6 +4,11 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#elif defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Architecture: HalfKAv2-HM with horizontally-mirrored king buckets
@@ -174,17 +179,64 @@ inline void accFusedCapture(int16_t* acc, int sub1, int sub2, int add1) {
 }
 
 // Runs the output layer. bucket = (popcount(occupied) - 2) / 4.
-// stm and ntm loops merged into one pass for better cache utilisation.
+#ifdef __ARM_NEON
+// Lizard SCReLU: reorder (v*v)*w → (v*w)*v so the first multiply stays in
+// int16. Safe because all l1w weights satisfy |w| ≤ 127, giving a max
+// product of 255 × 127 = 32,385 < 32,767.
+// Four separate int32 accumulators (lo/hi × stm/ntm) keep each lane under
+// INT32_MAX during accumulation; vpaddlq_s32 widens to int64 before the
+// final horizontal reduction.
 inline int nnueForward(const int16_t* __restrict__ stm_acc,
                        const int16_t* __restrict__ ntm_acc,
                        int bucket) {
-    // 1024 neurons × 255² × max_l1w can exceed INT32_MAX.
-    // Inner 64-element blocks stay within int32; block sums widen to int64.
-    int64_t output1 = 0, output2 = 0;
-
     const int16_t* stm_w = nnueWeights.l1w[bucket];
     const int16_t* ntm_w = stm_w + NNUE_HIDDEN;
 
+    const int16x8_t vec_zero = vdupq_n_s16(0);
+    const int16x8_t vec_qa   = vdupq_n_s16(NNUE_QA);
+
+    int32x4_t sum_s_lo = vdupq_n_s32(0), sum_s_hi = vdupq_n_s32(0);
+    int32x4_t sum_n_lo = vdupq_n_s32(0), sum_n_hi = vdupq_n_s32(0);
+
+    for (int i = 0; i < NNUE_HIDDEN; i += 8) {
+        const int16x8_t vs = vminq_s16(vmaxq_s16(vld1q_s16(stm_acc + i), vec_zero), vec_qa);
+        const int16x8_t ws = vld1q_s16(stm_w + i);
+        const int16x8_t vn = vminq_s16(vmaxq_s16(vld1q_s16(ntm_acc + i), vec_zero), vec_qa);
+        const int16x8_t wn = vld1q_s16(ntm_w + i);
+
+        const int16x8_t vws = vmulq_s16(vs, ws);   // (v*w) in int16
+        const int16x8_t vwn = vmulq_s16(vn, wn);
+
+        // Widen (v*w)*v to int32 using low/high halves (vmull_high_s16 = ARM64)
+        sum_s_lo = vaddq_s32(sum_s_lo, vmull_s16    (vget_low_s16(vws), vget_low_s16(vs)));
+        sum_s_hi = vaddq_s32(sum_s_hi, vmull_high_s16(vws, vs));
+        sum_n_lo = vaddq_s32(sum_n_lo, vmull_s16    (vget_low_s16(vwn), vget_low_s16(vn)));
+        sum_n_hi = vaddq_s32(sum_n_hi, vmull_high_s16(vwn, vn));
+    }
+
+    // Merge lo+hi: each lane now holds up to 256 products (~2.1B < INT32_MAX).
+    // vpaddlq_s32 pairwise-widens 4×int32 → 2×int64 before horizontal sum.
+    const int64x2_t s64 = vpaddlq_s32(vaddq_s32(sum_s_lo, sum_s_hi));
+    const int64x2_t n64 = vpaddlq_s32(vaddq_s32(sum_n_lo, sum_n_hi));
+
+    const int64_t stm_total = vgetq_lane_s64(s64, 0) + vgetq_lane_s64(s64, 1);
+    const int64_t ntm_total = vgetq_lane_s64(n64, 0) + vgetq_lane_s64(n64, 1);
+
+    int32_t output = (int32_t)(stm_total / NNUE_QA) + (int32_t)(ntm_total / NNUE_QA);
+    output += nnueWeights.l1b[bucket];
+    return (int)(output * NNUE_SCALE / (NNUE_QA * NNUE_QB));
+}
+
+#elif defined(__AVX2__)
+// TODO: AVX2 port for Linux x86-64.
+// Same (v*w)*v logic: _mm256_mullo_epi16(w, v_clamped) then
+// _mm256_madd_epi16(vw, v_clamped) to accumulate into int32 lanes.
+inline int nnueForward(const int16_t* __restrict__ stm_acc,
+                       const int16_t* __restrict__ ntm_acc,
+                       int bucket) {
+    int64_t output1 = 0, output2 = 0;
+    const int16_t* stm_w = nnueWeights.l1w[bucket];
+    const int16_t* ntm_w = stm_w + NNUE_HIDDEN;
     for (int i = 0; i < NNUE_HIDDEN; i += 64) {
         int32_t sb = 0, nb = 0;
         for (int j = i; j < i + 64; j++) {
@@ -196,8 +248,32 @@ inline int nnueForward(const int16_t* __restrict__ stm_acc,
         output1 += sb;
         output2 += nb;
     }
-
     int32_t output = (int32_t)(output1 / NNUE_QA) + (int32_t)(output2 / NNUE_QA);
     output += nnueWeights.l1b[bucket];
     return (int)(output * NNUE_SCALE / (NNUE_QA * NNUE_QB));
 }
+
+#else
+// Scalar fallback: 64-element int32 blocks widen to int64 to avoid overflow.
+inline int nnueForward(const int16_t* __restrict__ stm_acc,
+                       const int16_t* __restrict__ ntm_acc,
+                       int bucket) {
+    int64_t output1 = 0, output2 = 0;
+    const int16_t* stm_w = nnueWeights.l1w[bucket];
+    const int16_t* ntm_w = stm_w + NNUE_HIDDEN;
+    for (int i = 0; i < NNUE_HIDDEN; i += 64) {
+        int32_t sb = 0, nb = 0;
+        for (int j = i; j < i + 64; j++) {
+            int32_t vs = std::clamp((int32_t)stm_acc[j], 0, (int32_t)NNUE_QA);
+            int32_t vn = std::clamp((int32_t)ntm_acc[j], 0, (int32_t)NNUE_QA);
+            sb += vs * vs * stm_w[j];
+            nb += vn * vn * ntm_w[j];
+        }
+        output1 += sb;
+        output2 += nb;
+    }
+    int32_t output = (int32_t)(output1 / NNUE_QA) + (int32_t)(output2 / NNUE_QA);
+    output += nnueWeights.l1b[bucket];
+    return (int)(output * NNUE_SCALE / (NNUE_QA * NNUE_QB));
+}
+#endif
