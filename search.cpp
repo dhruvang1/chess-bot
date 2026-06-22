@@ -573,7 +573,7 @@ class Search {
                     m.score = 59000 * 20000;
             }
         } else {
-            board->getLegalMoves(legalMoves, ply + depth <= 4);
+            board->getLegalMoves(legalMoves, false);
             int prevSq  = (prevMove  != MOVE_NONE) ? toSq(prevMove)  : -1;
             int prev2Sq = (prev2Move != MOVE_NONE) ? toSq(prev2Move) : -1;
             scoreMoves(legalMoves, ttMove, killers[2*ply], killers[2*ply + 1], counterMove,
@@ -592,17 +592,15 @@ class Search {
             }
         }
 
-        if (legalMoves.empty()) {
-            // it might look like we are checking twice for checkmate, once above and once now.
-            // The above checks if there was an illegal move (not handling check) and the king is captured.
-            // The below checks the line when we reach down a valid path and there are no legal moves.
+        // Terminal detection: the move list is pseudo-legal, so it may contain only
+        // illegal (pinned) moves. Verify at least one legal move exists — done before
+        // null-move/pruning so a true stalemate can never be masked. hasLegalMove
+        // early-exits on the first legal move, so it is ~1 cheap test in normal positions.
+        if (legalMoves.empty() || !board->hasLegalMove(legalMoves)) {
             if (inCheck) {
-                // this is checkmate
-                return -(BoardType::checkmateEval - ply);
+                return -(BoardType::checkmateEval - ply);   // checkmate
             } else {
-                // stalemate is still considered "bad" to not incentivize going for it in good or slightly bad positions.
-                // its given eval of a minor piece => if the position is worse than a minor piece, than stalemate is considered better so "try" to go for it.
-                return -(BoardType::stalemateEval);
+                return -(BoardType::stalemateEval);         // stalemate (draw, == 0)
             }
         }
 
@@ -677,6 +675,7 @@ class Search {
             }
             const Move& m = legalMoves[i];
             if (m.move == excludedMove) continue;
+            if (!board->isLegalMove(m)) continue;   // skip pseudo-legal-but-illegal (pinned) moves
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
             if (skipQuietMoves && isQuiet) {

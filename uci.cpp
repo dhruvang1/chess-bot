@@ -259,6 +259,15 @@ class Uci {
             }
 
             cout << endl;
+        } else if (tokens[0] == "perft") {
+            int d = (tokens.size() > 1) ? stoi(tokens[1]) : 5;
+            uint64_t mismatches = 0;
+            auto t0 = std::chrono::steady_clock::now();
+            uint64_t nodes = board.perftDiff(d, mismatches);
+            auto t1 = std::chrono::steady_clock::now();
+            long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            cout << "perft(" << d << ") = " << nodes << "  mismatches=" << mismatches
+                 << "  time=" << ms << "ms" << endl;
         } else if (tokens[0] == "fen") {
             cout << board.getFen() << endl;
         } else if (tokens[0] == "print") {

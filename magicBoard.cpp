@@ -581,6 +581,111 @@ public:
         moves = std::move(legal);
     }
 
+    // Static legality test: does this pseudo-legal move leave our own
+    // king in check?  Computed with bitboard ray math — no make/unmake — so it is cheap
+    // enough to run on every move and gives correct checkmate/stalemate detection even
+    // with pinned pieces.
+    bool isLegalMove(const Move& m) {
+        const int from = ::fromSq(m.move);
+        const int to   = ::toSq(m.move);
+
+        // Castling moves are emitted already-legal by generateMoves (king-not-in-check and
+        // traversed squares verified safe), so trust them.
+        if (isKing(m.movePiece) && abs(to - from) == 2) return true;
+
+        const Color us   = turn;
+        const Color them = flipColor(us);
+        const uint64_t fromBB = sqToBB(from);
+        const uint64_t toBB   = sqToBB(to);
+
+        const uint64_t ourKing = (us == WHITE) ? whiteKing : blackKing;
+        const int kingSq = __builtin_ctzll(ourKing);
+
+        const uint64_t enemyPawns   = (them == WHITE) ? whitePawns   : blackPawns;
+        const uint64_t enemyKnights = (them == WHITE) ? whiteKnights : blackKnights;
+        const uint64_t enemyKing    = (them == WHITE) ? whiteKing    : blackKing;
+        const uint64_t enemyBQ = (them == WHITE) ? (whiteBishops | whiteQueens) : (blackBishops | blackQueens);
+        const uint64_t enemyRQ = (them == WHITE) ? (whiteRooks   | whiteQueens) : (blackRooks   | blackQueens);
+
+        // King moves: the destination must be unattacked, with our king removed from
+        // occupancy so it can't block an enemy slider's x-ray through its old square.
+        // A captured enemy piece on 'to' is excluded from the attacker sets (~toBB).
+        if (isKing(m.movePiece)) {
+            const uint64_t occ = (occupied ^ fromBB) | toBB;
+            if (pawnAttackTable[us][to] & enemyPawns & ~toBB)   return false;
+            if (knightAttackTable[to]   & enemyKnights & ~toBB) return false;
+            if (kingAttackTable[to]     & enemyKing)            return false;
+            if (getBishopAttacks(to, occ) & (enemyBQ & ~toBB))  return false;
+            if (getRookAttacks(to, occ)   & (enemyRQ & ~toBB))  return false;
+            return true;
+        }
+
+        // Non-king moves.
+        const uint64_t enemyOcc = (them == WHITE) ? allWhite : allBlack;
+        const uint64_t checkers = getAttackersTo(kingSq, occupied) & enemyOcc;
+        const int numCheckers = __builtin_popcountll(checkers);
+        if (numCheckers >= 2) return false;   // only a king move escapes a double check
+
+        // En passant removes the captured pawn from a square other than 'to'.
+        const bool isEP = isPawn(m.movePiece) && colOf(from) != colOf(to) && !(occupied & toBB);
+
+        uint64_t occAfter = (occupied ^ fromBB) | toBB;
+        uint64_t removedEnemy = 0;
+        if (isEP) {
+            const int capSq = (us == WHITE) ? (to - 8) : (to + 8);
+            occAfter ^= sqToBB(capSq);
+            removedEnemy = sqToBB(capSq);
+        } else if (occupied & toBB) {
+            removedEnemy = toBB;   // normal capture
+        }
+
+        // After the move, no enemy slider may attack our king. This subsumes pin
+        // detection and the capture/block of a single slider check.
+        if (getBishopAttacks(kingSq, occAfter) & (enemyBQ & ~removedEnemy)) return false;
+        if (getRookAttacks(kingSq, occAfter)   & (enemyRQ & ~removedEnemy)) return false;
+
+        // A single check by a knight or pawn cannot be blocked — it must be captured.
+        if (numCheckers == 1) {
+            const uint64_t nonSliderCheckers = checkers & ~(enemyBQ | enemyRQ);
+            if (nonSliderCheckers && !(nonSliderCheckers & removedEnemy)) return false;
+        }
+        return true;
+    }
+
+    bool hasLegalMove(const MoveList& moves) {
+        for (const Move& m : moves) if (isLegalMove(m)) return true;
+        return false;
+    }
+
+    // Perft with a built-in differential check: at every node it compares the static
+    // isLegalMove() verdict against the make/unmake oracle (isKingInCheck after the move).
+    // Any disagreement is printed with the FEN + move and counted in `mismatches`.
+    // Node counts can be compared against published reference values.
+    uint64_t perftDiff(int depth, uint64_t& mismatches) {
+        MoveList moves;
+        generateMoves(moves, false);   // pseudo-legal
+        uint64_t nodes = 0;
+        for (const Move& m : moves) {
+            bool staticLegal = isLegalMove(m);
+            processMove(m.move);
+            bool realLegal = !isKingInCheck(flipColor(turn));   // mover = side before the move
+            if (staticLegal != realLegal) {
+                undoMove();
+                cout << "PERFT MISMATCH fen=" << getFen() << " move=" << moveToUci(m.move)
+                     << " static=" << staticLegal << " real=" << realLegal << endl;
+                mismatches++;
+                continue;
+            }
+            if (!realLegal) { 
+                undoMove(); 
+                continue; 
+            }
+            nodes += (depth <= 1) ? 1 : perftDiff(depth - 1, mismatches);
+            undoMove();
+        }
+        return nodes;
+    }
+
     bool isKingInCheck(Color color) {
         uint64_t myKing = (color == WHITE) ? whiteKing : blackKing;
         const int kingSq = __builtin_ctzll(myKing);
