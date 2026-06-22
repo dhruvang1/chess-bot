@@ -462,7 +462,7 @@ class Search {
             // Skip TT cutoffs during singular search: the TT score was computed with the
             // excluded move available, so it would give a wrong result here.
             if (excludedMove == MOVE_NONE) {
-                if (alpha == beta - 1) {
+                if (!pvNode) {
                     cacheHit++;
                     if (ttEntry->depth >= depth) {
                         // Don't trust TT mate scores near the leaves: the score may have
@@ -530,7 +530,7 @@ class Search {
         // Reverse futility pruning: position is so far above beta, skip searching.
         // Improving → smaller margin → prune more (eval is reliable, position trending up).
         // Not improving → larger margin → prune less (eval might be a temporary spike).
-        if (depth <= 4 && alpha == beta - 1 && !inCheck
+        if (depth <= 4 && !pvNode && !inCheck
             && abs(beta) < BoardType::mateThreshold) {
             int rfpMargin = improving ? 120 : 175;
             if (staticEval - depth * rfpMargin >= beta) {
@@ -543,7 +543,7 @@ class Search {
         // Double extension: if the margin is extreme (very singular), extend by +2.
         int singularExtension = 0;
         if (excludedMove == MOVE_NONE
-            && alpha == beta - 1
+            && !pvNode
             && depth >= 8
             && ttEntry != nullptr
             && ttEntry->depth >= depth - 3
@@ -625,7 +625,7 @@ class Search {
         // probcut: if a capture beats beta + margin at reduced depth, prune immediately.
         // Only at non-PV nodes, depth >= 5, not in check, away from mate.
         static constexpr int PROBCUT_MARGIN = 200;
-        if (alpha == beta - 1 && depth >= 5 && !inCheck && abs(beta) < BoardType::mateThreshold) {
+        if (!pvNode && depth >= 5 && !inCheck && abs(beta) < BoardType::mateThreshold) {
             int pcBeta = beta + PROBCUT_MARGIN;
             MoveList pcMoves = legalMoves;  // copy since we'll selection-sort destructively
             for (int i = 0; i < pcMoves.size(); i++) {
@@ -685,7 +685,7 @@ class Search {
             }
 
             // late move pruning: at shallow depth, skip late quiet moves
-            if (ply > 0 && isQuiet && !inCheck && depth <= 3 && i >= lmpThreshold[depth]
+            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 3 && i >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
                 continue;
@@ -693,7 +693,7 @@ class Search {
 
             // history pruning: once a quiet move's combined history score drops below the threshold,
             // skip all remaining quiets — they're ordered by score so all subsequent will be worse.
-            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && i > 0 && m.score < -100 * depth) {
+            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 4 && i > 0 && m.score < -100 * depth) {
                 histLmpPrune++;
                 skipQuietMoves = true;
                 continue;
@@ -704,7 +704,7 @@ class Search {
             // Improving → position trending up, might recover → add margin (prune less).
             static constexpr int futilityMargin[] = {0, 150, 300, 450, 600};
             if (ply > 0 && isQuiet && !inCheck && depth <= 4 && i > 0
-                && alpha == beta - 1
+                && !pvNode
                 && abs(alpha) < BoardType::mateThreshold
                 && staticEval + futilityMargin[depth] + (improving ? 80 : 0) <= alpha) {
                 futilePrune++;
@@ -714,7 +714,7 @@ class Search {
             // SEE pruning: skip moves that lose too much material in the exchange.
             // Only call SEE if the destination is actually defended (isSquareThreatened gate)
             // to avoid the expensive getAttackersTo call on uncontested squares.
-            if (ply > 0 && !inCheck && depth <= 6 && i > 0) {
+            if (ply > 0 && !pvNode && !inCheck && depth <= 6 && i > 0) {
                 // Quiet SEE threshold: -50 * d * sqrt(d), precomputed for d=0..6
                 static constexpr int quietSeeThreshold[] = {0, -50, -141, -260, -400, -559, -735};
                 int seeThreshold = isQuiet ? quietSeeThreshold[depth] : -100 * depth;
@@ -756,7 +756,6 @@ class Search {
                     int R = lmrTable[min(depth, 63)][min(i, 63)];
                     if (pvNode) R -= 1;
 
-                    if (m.isLosingCapture) R += 1;
                     // Improving: position is trending up, eval is reliable — search deeper.
                     if (improving) R--;
                     R += cutNode;  // at cut nodes, non-first moves are very unlikely to be best
