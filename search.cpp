@@ -907,7 +907,10 @@ class Search {
             return -(BoardType::checkmateEval - ply);
         }
 
-        if (depth == 0) {
+        bool inCheck = board->isKingInCheck();
+
+        // Only skip to standing pat at depth 0 when not in check — in check we must search evasions
+        if (depth == 0 && !inCheck) {
             return board->getBoardEval();
         }
 
@@ -919,22 +922,33 @@ class Search {
             if (ttEntry->boundType() == TTFlagAlpha && ttEval <= alpha) { qCacheHit++; return alpha; }
         }
 
-        int boardEval = board->getBoardEval();
-        if (boardEval >= beta) {
-            return boardEval;
+        int boardEval;
+        if (inCheck) {
+            // Can't stand pat under check — worst case is checkmate here
+            boardEval = -(BoardType::checkmateEval - ply);
+        } else {
+            boardEval = board->getBoardEval();
+            if (boardEval >= beta) return boardEval;
+            alpha = max(alpha, boardEval);
         }
-        alpha = max(alpha, boardEval);
 
         MoveList legalMoves;
-        board->getCapturesPromo(legalMoves);
+        if (inCheck) {
+            // Must consider all evasions, not just captures
+            board->getLegalMoves(legalMoves, false);
+        } else {
+            board->getCapturesPromo(legalMoves);
+        }
+
         if (legalMoves.empty()) {
-            return boardEval;
+            // In check with no moves = checkmate; otherwise no captures = quiet position
+            return inCheck ? -(BoardType::checkmateEval - ply) : boardEval;
         }
 
         uint16_t noMove = MOVE_NONE;
         scoreMoves(legalMoves, noMove, noMove, noMove);
 
-        int maxEval = alpha;
+        int maxEval = inCheck ? -(BoardType::checkmateEval - ply) : alpha;
         int delta = 300;
         for(int i = 0; i < legalMoves.size(); i++) {
             for (int j = i + 1; j < legalMoves.size(); j++) {
@@ -942,17 +956,21 @@ class Search {
                     std::swap(legalMoves[i], legalMoves[j]);
             }
             const Move& m = legalMoves[i];
+            bool isQuiet = !(m.isCapture || m.isPromotion);
 
-            // delta pruning: even winning this piece cleanly can't raise alpha
-            if (m.isCapture && (boardEval + abs(board->pieceValue[m.capturePiece]) + delta < alpha)) {
-                deltaPrune++;
-                continue;
+            // Once we've found a non-losing evasion, stop searching quiet evasions
+            if (inCheck && maxEval > -BoardType::mateThreshold && isQuiet) break;
+
+            // delta pruning and SEE pruning don't apply when forced to evade check
+            if (!inCheck) {
+                if (m.isCapture && (boardEval + abs(board->pieceValue[m.capturePiece]) + delta < alpha)) {
+                    deltaPrune++;
+                    continue;
+                }
+                if (m.isCapture && m.isLosingCapture) continue;
             }
 
-            // SEE pruning: losing captures were already identified in scoreMoves
-            if (m.isCapture && m.isLosingCapture) {
-                continue;
-            }
+            if (!board->isLegalMove(m)) continue;
 
             board->processMove(m.move);
             int eval = -quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
