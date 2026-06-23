@@ -1185,6 +1185,24 @@ public:
         return boardHash;
     }
 
+    uint64_t getPawnHash() const {
+        return whitePawns * 6364136223846793005ULL ^ blackPawns;
+    }
+
+    std::pair<uint64_t, uint64_t> getNonPawnHashes() const {
+        uint64_t w = whiteKnights * 0x9e3779b97f4a7c15ULL
+                   ^ whiteBishops * 0x517cc1b727220a95ULL
+                   ^ whiteRooks   * 0xbf58476d1ce4e5b9ULL
+                   ^ whiteQueens  * 0x94d049bb133111ebULL
+                   ^ whiteKing    * 0x6c62272e07bb0142ULL;
+        uint64_t b = blackKnights * 0x9e3779b97f4a7c15ULL
+                   ^ blackBishops * 0x517cc1b727220a95ULL
+                   ^ blackRooks   * 0xbf58476d1ce4e5b9ULL
+                   ^ blackQueens  * 0x94d049bb133111ebULL
+                   ^ blackKing    * 0x6c62272e07bb0142ULL;
+        return { w, b };
+    }
+
     string getFen() const {
         string fen;
 

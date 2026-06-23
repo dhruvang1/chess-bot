@@ -62,6 +62,13 @@ class Search {
     // so color is ignored (white queen captured == black queen captured). ~18KB.
     int captHist[12][64][6] = {};
 
+    static constexpr int CORR_HIST_SIZE    = 16384;
+    static constexpr int NONPAWN_CORR_SIZE = 65536;
+    static constexpr int CORR_HIST_INERTIA = 143;
+    static constexpr int CORR_HIST_CAP    = 9710;
+    int32_t pawnCorrHist[2][CORR_HIST_SIZE] = {};
+    int32_t nonPawnCorrHist[2][2][NONPAWN_CORR_SIZE] = {}; // [stm][side][key]
+
     // Triangular PV table: pvTable[ply][ply..ply+pvLength[ply]-1] stores the PV from that ply.
     // After search, pvTable[0][0..pvLength[0]-1] contains the full principal variation.
     uint16_t pvTable[MAX_PLY][MAX_PLY] = {};
@@ -513,11 +520,19 @@ class Search {
         // depth >= 2 avoids cascading explosion at the qsearch boundary
         if (inCheck && depth >= 2 && ply < 40) depth++;
 
-        // Compute static eval at every non-check node; stored in evalStack for the improving
-        // heuristic and reused by RFP, futility, and null move — no redundant calls needed.
+        int rawEval = 0;
         int staticEval = 0;
         if (!inCheck) {
-            staticEval = board->getBoardEval();
+            rawEval = board->getBoardEval();
+            int stm = board->turn;
+            int pawnKey = board->getPawnHash() % CORR_HIST_SIZE;
+            auto [wHash, bHash] = board->getNonPawnHashes();
+            int wKey = wHash % NONPAWN_CORR_SIZE;
+            int bKey = bHash % NONPAWN_CORR_SIZE;
+            int correction = (pawnCorrHist[stm][pawnKey]
+                            + nonPawnCorrHist[stm][0][wKey]
+                            + nonPawnCorrHist[stm][1][bKey]) / 256;
+            staticEval = std::clamp(rawEval + correction, -BoardType::mateThreshold + 1, BoardType::mateThreshold - 1);
             evalStack[ply] = staticEval;
         }
         // "Improving": true when the position is trending better vs two half-moves ago.
@@ -860,6 +875,21 @@ class Search {
             for (auto &i: resultList) {
                 orderedMovesLastRound.push_back(i.second);
             }
+        }
+
+        if (!inCheck && std::abs(maxEval) < BoardType::mateThreshold) {
+            int stm = board->turn;
+            int refEval = (rawEval + staticEval) / 2;
+            int diff = (maxEval - refEval) * 256;
+            int weight = std::min(16, depth + 1);
+            auto update = [&](int32_t& val) {
+                val = ((CORR_HIST_INERTIA - weight) * val + weight * diff) / CORR_HIST_INERTIA;
+                val = std::clamp(val, -CORR_HIST_CAP, CORR_HIST_CAP);
+            };
+            update(pawnCorrHist[stm][board->getPawnHash() % CORR_HIST_SIZE]);
+            auto [wHash, bHash] = board->getNonPawnHashes();
+            update(nonPawnCorrHist[stm][0][wHash % NONPAWN_CORR_SIZE]);
+            update(nonPawnCorrHist[stm][1][bHash % NONPAWN_CORR_SIZE]);
         }
 
         saveInTT(bestMove, maxEval, depth, ttflag, ply);
