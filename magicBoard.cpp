@@ -753,6 +753,22 @@ public:
         return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
     }
 
+    // Transform a square so that the nearest correct corner maps to a1 (index 0)
+    // for lookup in kbnTable[]. Dark bishop correct corners: a1, h8.
+    // Light bishop correct corners: h1, a8.
+    static int transformForKBN(int sq, bool lightBishop) {
+        int file = sq & 7, rank = sq >> 3;
+        if (lightBishop) {
+            int distH1 = max(7 - file, rank);
+            int distA8 = max(file, 7 - rank);
+            return (distH1 <= distA8) ? (sq ^ 7) : (sq ^ 56);
+        } else {
+            int distA1 = max(file, rank);
+            int distH8 = max(7 - file, 7 - rank);
+            return (distA1 <= distH8) ? sq : (sq ^ 63);
+        }
+    }
+
     // KBN vs K: must drive the king to a corner matching the bishop's color.
     // Light-square bishop → h1 (sq 7) or a8 (sq 56).
     // Dark-square bishop  → a1 (sq 0) or h8 (sq 63).
@@ -765,45 +781,22 @@ public:
         uint64_t bishops = winnerIsWhite ? whiteBishops : blackBishops;
         bool lightBishop = (bishops & lightSquareMask) != 0;
 
+        int transformed = transformForKBN(loserSq, lightBishop);
+        int bonus = 500 + kbnTable[transformed];
+
         int lf = loserSq & 7, lr = loserSq >> 3;
 
-        // Distance to each correct corner (Chebyshev).
-        int correctDist1, correctDist2;
-        // Distance to each wrong corner — needed for the "push out of wrong corner" gradient.
-        int wrongDist1, wrongDist2;
-        if (lightBishop) {
-            // Correct: h1 (file 7, rank 0), a8 (file 0, rank 7)
-            correctDist1 = max(7 - lf, lr);
-            correctDist2 = max(lf, 7 - lr);
-            // Wrong:   a1 (file 0, rank 0), h8 (file 7, rank 7)
-            wrongDist1   = max(lf, lr);
-            wrongDist2   = max(7 - lf, 7 - lr);
-        } else {
-            // Correct: a1 (file 0, rank 0), h8 (file 7, rank 7)
-            correctDist1 = max(lf, lr);
-            correctDist2 = max(7 - lf, 7 - lr);
-            // Wrong:   h1 (file 7, rank 0), a8 (file 0, rank 7)
-            wrongDist1   = max(7 - lf, lr);
-            wrongDist2   = max(lf, 7 - lr);
-        }
-        int cornerDist = min(correctDist1, correctDist2);
-        // wrongCornerDist is 0 when the king is sitting in a wrong corner.
-        // Rewarding a larger value here creates an explicit gradient that pushes
-        // the king away from wrong corners, which the correctCornerDist term alone
-        // cannot provide (it contributes 0 from either wrong corner).
-        int wrongCornerDist = min(wrongDist1, wrongDist2);
+        // Reward losing king being in the outer 2 rows/files
+        int fileDist = min(lf, 7 - lf);  // 0 on edge, 1 one step in, 2-3 center
+        int rankDist = min(lr, 7 - lr);
+        int outerDist = min(fileDist, rankDist);  // 0 = on edge, 1 = second row
+        if (outerDist == 0) bonus += 200;
+        else if (outerDist == 1) bonus += 100;
 
         int df = abs((winnerSq & 7) - lf);
         int dr = abs((winnerSq >> 3) - lr);
         int kingDist = max(df, dr);
-
-        // Baseline: always signals a win regardless of king position (+500).
-        // Correct corner drive: +0..+700. Wrong corner push: +0..+560.
-        // Winning king proximity: +0..+350.
-        int bonus = 500
-                  + (7 - cornerDist)  * 100
-                  + wrongCornerDist   * 80
-                  + (7 - kingDist)    * 50;
+        bonus += (7 - kingDist) * 50;
 
         // Piece tropism: reward knight and bishop for proximity to the losing king.
         uint64_t pieces = (winnerIsWhite ? allWhite : allBlack)
@@ -1576,6 +1569,20 @@ private:
     static constexpr uint64_t lightSquareMask = 0x55AA55AA55AA55AAULL;
     static constexpr uint64_t fileAMask = 0x0101010101010101ULL;
     static constexpr uint64_t fileHMask = 0x8080808080808080ULL;
+
+    // KBN vs K: square table oriented toward target corner a1.
+    // Higher value = losing king is closer to being mated.
+    // Non-zero everywhere so the engine always has directional guidance.
+    static constexpr int kbnTable[64] = {
+         700,  560,  430,  310,  200,  110,   50,   10,
+         560,  440,  320,  220,  140,   70,   30,    0,
+         430,  320,  220,  140,   80,   40,   10,    0,
+         310,  220,  140,   80,   40,   10,    0,    0,
+         200,  140,   80,   40,   10,    0,    0,    0,
+         110,   70,   40,   10,    0,    0,    0,    0,
+          50,   30,   10,    0,    0,    0,    0,    0,
+          10,    0,    0,    0,    0,    0,    0,    0,
+    };
 
     static constexpr int knightMobilityWeight = 4;
     static constexpr int bishopMobilityWeight = 5;
