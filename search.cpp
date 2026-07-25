@@ -62,6 +62,12 @@ class Search {
     // so color is ignored (white queen captured == black queen captured). ~18KB.
     int captHist[12][64][6] = {};
 
+    // Cap history entries to [-MAX_HISTORY, MAX_HISTORY] via gravity.
+    static constexpr int MAX_HISTORY = 16384;
+    static inline void updateHist(int& entry, int bonus) {
+        entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
+    }
+
     static constexpr int CORR_HIST_SIZE    = 16384;
     static constexpr int NONPAWN_CORR_SIZE = 65536;
     static constexpr int CORR_HIST_INERTIA = 143;
@@ -830,36 +836,36 @@ class Search {
                     }
                     int ci = pieceIdx(m.movePiece);
                     int csq = toSq(m.move);
-                    history[(int)m.movePiece][csq] += bonus;
+                    updateHist(history[(int)m.movePiece][csq], bonus);
                     // Penalise every quiet move that was searched before this cutoff move.
                     // They failed to produce a cutoff, so they deserve a lower ordering score.
                     for (int q = 0; q < numTriedQuiets - 1; q++) {
-                        history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])] -= bonus;
+                        updateHist(history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])], -bonus);
                     }
                     // Update continuation history (1-ply and 2-ply) with the same bonus/malus.
                     if (prevMove != MOVE_NONE) {
                         int pi  = pieceIdx(prevPiece);
                         int psq = toSq(prevMove);
-                        contHist[pi][psq][ci][csq] += bonus;
+                        updateHist(contHist[pi][psq][ci][csq], bonus);
                         for (int q = 0; q < numTriedQuiets - 1; q++) {
-                            contHist[pi][psq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])] -= bonus;
+                            updateHist(contHist[pi][psq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])], -bonus);
                         }
                         countermoves[(int)prevPiece][psq] = m.move;
                     }
                     if (prev2Move != MOVE_NONE) {
                         int p2i  = pieceIdx(prev2Piece);
                         int p2sq = toSq(prev2Move);
-                        contHist2[p2i][p2sq][ci][csq] += bonus;
+                        updateHist(contHist2[p2i][p2sq][ci][csq], bonus);
                         for (int q = 0; q < numTriedQuiets - 1; q++) {
-                            contHist2[p2i][p2sq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])] -= bonus;
+                            updateHist(contHist2[p2i][p2sq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])], -bonus);
                         }
                     }
 
                 } else if (m.isCapture) {
                     int capType = pieceIdx(m.capturePiece) / 2;
-                    captHist[pieceIdx(m.movePiece)][toSq(m.move)][capType] += bonus;
+                    updateHist(captHist[pieceIdx(m.movePiece)][toSq(m.move)][capType], bonus);
                     for (int q = 0; q < numTriedCaptures - 1; q++) {
-                        captHist[pieceIdx(triedCapturePieces[q])][toSq(triedCaptures[q])][pieceIdx(triedCaptureTypes[q]) / 2] -= bonus;
+                        updateHist(captHist[pieceIdx(triedCapturePieces[q])][toSq(triedCaptures[q])][pieceIdx(triedCaptureTypes[q]) / 2], -bonus);
                     }
                 }
                 break;
@@ -1058,6 +1064,28 @@ class Search {
     void initKillers() {
         memset(killers, 0, sizeof(killers));
         memset(countermoves, 0, sizeof(countermoves));
+
+        // Instrumentation: report peak magnitudes accumulated during the prior search
+        // (before aging) so we can size a history cap against real data.
+        {
+            int hMax = 0, chMax = 0, ch2Max = 0, cpMax = 0;
+            for (auto& row : history)
+                for (auto& v : row) hMax = std::max(hMax, std::abs(v));
+            for (auto& a : contHist)
+                for (auto& b : a)
+                    for (auto& c : b)
+                        for (auto& v : c) chMax = std::max(chMax, std::abs(v));
+            for (auto& a : contHist2)
+                for (auto& b : a)
+                    for (auto& c : b)
+                        for (auto& v : c) ch2Max = std::max(ch2Max, std::abs(v));
+            for (auto& a : captHist)
+                for (auto& b : a)
+                    for (auto& v : b) cpMax = std::max(cpMax, std::abs(v));
+            cout << "info string histMax hist " << hMax << " contHist " << chMax
+                 << " contHist2 " << ch2Max << " captHist " << cpMax << endl;
+        }
+
         // Age both history tables toward zero instead of zeroing them.
         // Preserves relative ordering while letting fresh updates dominate.
         for (auto& row : history)

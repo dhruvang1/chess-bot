@@ -913,6 +913,25 @@ public:
             else if (bType == KBN_MATE)  eval  = kbnMatingBonus(false);  // override: NNUE has no data here
         }
 
+        // K+minor vs K+pawns: the minor-piece side can never win (insufficient mating material).
+        // Cap eval so it never favors that side. Eval is from side-to-move perspective.
+        // Give a small draw-seeking bonus scaled by opponent pawn count so the engine
+        // actively tries to capture pawns rather than drifting.
+        bool whiteIsMinorOnly = !whiteQueens && !whiteRooks && !whitePawns
+                              && (__builtin_popcountll(whiteBishops | whiteKnights) == 1);
+        bool blackIsMinorOnly = !blackQueens && !blackRooks && !blackPawns
+                              && (__builtin_popcountll(blackBishops | blackKnights) == 1);
+        if (whiteIsMinorOnly && blackPawns) {
+            int pawnCount = __builtin_popcountll(blackPawns);
+            int drawSeek = -pawnCount * 15;  // more pawns = more dangerous for us
+            eval = (turn == WHITE) ? min(eval, drawSeek) : max(eval, -drawSeek);
+        }
+        if (blackIsMinorOnly && whitePawns) {
+            int pawnCount = __builtin_popcountll(whitePawns);
+            int drawSeek = -pawnCount * 15;
+            eval = (turn == BLACK) ? min(eval, drawSeek) : max(eval, -drawSeek);
+        }
+
         // Scale eval toward 0 as the 50-move clock ticks up.
         // Encourages real progress over artificial clock resets (e.g. pawn sacs in drawn endgames).
         // Formula: (150 - hmc) / 150 → 100% at clock=0, ~67% at clock=50, ~33% at clock=100.
