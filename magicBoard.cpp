@@ -1142,9 +1142,28 @@ public:
         return min(gamePhase, 24);
     }
 
+    // Call once at the start of each search (before iterative deepening) to record
+    // how many times every position on the board so far has occurred for real.
+    void snapshotRootHistory() {
+        rootHashHistory = hashHistory;
+    }
+
     bool isPositionRepeated() {
         auto it = hashHistory.find(boardHash);
-        return it != hashHistory.end() && it->second > 2;
+        int total = (it != hashHistory.end()) ? it->second : 0;
+        if (total > 2) return true;  // true 3-fold — always safe, regardless of history
+
+        if (total == 2) {
+            // A 2-fold is only safe to call a draw immediately if BOTH occurrences
+            // happened inside this search (i.e. this exact cycle was constructed by
+            // moves the search itself is considering). If one occurrence predates the
+            // search root, the position was played for real, not searched — there may
+            // be a winning deviation nobody has looked for, so require a true 3-fold instead.
+            auto rootIt = rootHashHistory.find(boardHash);
+            int preRoot = (rootIt != rootHashHistory.end()) ? rootIt->second : 0;
+            if (preRoot == 0) return true;
+        }
+        return false;
     }
 
     bool isFiftyMoveDraw() const {
@@ -1581,6 +1600,7 @@ private:
 
     uint64_t boardHash = 0;
     std::unordered_map<uint64_t, int> hashHistory;
+    std::unordered_map<uint64_t, int> rootHashHistory;
     Hash hashHelper;
     uint64_t castlingHashKeys[4]{};
 

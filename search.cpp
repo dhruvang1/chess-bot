@@ -267,6 +267,8 @@ class Search {
         string bestMoveLine;
         int depthEvaluated = 0;
 
+        board->snapshotRootHistory();
+
         uint16_t forced = forcedRootMove();
         if (forced != MOVE_NONE) {
             logSearchResult(0, 0, moveToUci(forced));
