@@ -514,7 +514,11 @@ class Search {
         // (check, singular, double) preventing unbounded cascade at fixed depth.
         if (depth <= 0 || ply >= iterDepth + 8) {
             int eval = quiescenceSearch(alpha, beta, QSEARCH_MAX_DEPTH, ply);
-            saveInTT(pvLength[ply] > 0 ? pvTable[ply][ply] : MOVE_NONE, eval, depth, TTFlagExact, ply);
+            // eval is only a true Exact score when it falls strictly inside (alpha, beta);
+            // otherwise it's a bound, and tagging it Exact lets a window-dependent score
+            // get trusted as ground truth by unrelated paths that transpose into the TT.
+            int qFlag = (eval >= beta) ? TTFlagBeta : (eval <= alpha) ? TTFlagAlpha : TTFlagExact;
+            saveInTT(pvLength[ply] > 0 ? pvTable[ply][ply] : MOVE_NONE, eval, depth, qFlag, ply);
             return eval;
         }
 
