@@ -9,6 +9,7 @@
 #include "magic_constants.hpp"
 #include "hash.cpp"
 #include "nnue.hpp"
+#include "endgameEval.hpp"
 
 using namespace std;
 
@@ -718,98 +719,6 @@ public:
         return isSquareAttackedByColor(toSq(row, col), color);
     }
 
-    // Bonus for driving the losing king to the corner/edge, bringing the
-    // winning king close, and rewarding all winning pieces for proximity
-    // to the losing king (tropism). Fires only in basic mating endgames
-    // where NNUE lacks training data for the forcing patterns.
-    int matingBonus(bool winnerIsWhite) {
-        int wkSq = __builtin_ctzll(whiteKing);
-        int bkSq = __builtin_ctzll(blackKing);
-        int loserSq  = winnerIsWhite ? bkSq  : wkSq;
-        int winnerSq = winnerIsWhite ? wkSq  : bkSq;
-
-        int lf = loserSq & 7, lr = loserSq >> 3;
-        int edgeDist = min({lf, 7 - lf, lr, 7 - lr});
-
-        int df = abs((winnerSq & 7) - lf);
-        int dr = abs((winnerSq >> 3) - lr);
-        int kingDist = max(df, dr);
-
-        // Push losing king to edge/corner (+0..+600), bring winning king close (+0..+350)
-        int bonus = (3 - edgeDist) * 200 + (7 - kingDist) * 50;
-
-        // Piece tropism: reward every winning piece (excluding own king, already counted)
-        // for proximity to the losing king. Uses Chebyshev distance so a rook cutting
-        // a rank/file scores the same as a king adjacent — directionally correct and
-        // naturally guides rook/queen/bishop toward the mating zone without special-casing.
-        uint64_t pieces = (winnerIsWhite ? allWhite : allBlack)
-                        & ~(winnerIsWhite ? whiteKing : blackKing);
-        while (pieces) {
-            int psq = __builtin_ctzll(pieces); pieces &= pieces - 1;
-            int pDist = max(abs((psq & 7) - lf), abs((psq >> 3) - lr));
-            bonus += (7 - pDist) * 15;
-        }
-
-        return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
-    }
-
-    // Transform a square so that the nearest correct corner maps to a1 (index 0)
-    // for lookup in kbnTable[]. Dark bishop correct corners: a1, h8.
-    // Light bishop correct corners: h1, a8.
-    static int transformForKBN(int sq, bool lightBishop) {
-        int file = sq & 7, rank = sq >> 3;
-        if (lightBishop) {
-            int distH1 = max(7 - file, rank);
-            int distA8 = max(file, 7 - rank);
-            return (distH1 <= distA8) ? (sq ^ 7) : (sq ^ 56);
-        } else {
-            int distA1 = max(file, rank);
-            int distH8 = max(7 - file, 7 - rank);
-            return (distA1 <= distH8) ? sq : (sq ^ 63);
-        }
-    }
-
-    // KBN vs K: must drive the king to a corner matching the bishop's color.
-    // Light-square bishop → h1 (sq 7) or a8 (sq 56).
-    // Dark-square bishop  → a1 (sq 0) or h8 (sq 63).
-    int kbnMatingBonus(bool winnerIsWhite) {
-        int wkSq = __builtin_ctzll(whiteKing);
-        int bkSq = __builtin_ctzll(blackKing);
-        int loserSq  = winnerIsWhite ? bkSq  : wkSq;
-        int winnerSq = winnerIsWhite ? wkSq  : bkSq;
-
-        uint64_t bishops = winnerIsWhite ? whiteBishops : blackBishops;
-        bool lightBishop = (bishops & lightSquareMask) != 0;
-
-        int transformed = transformForKBN(loserSq, lightBishop);
-        int bonus = 500 + kbnTable[transformed];
-
-        int lf = loserSq & 7, lr = loserSq >> 3;
-
-        // Reward losing king being in the outer 2 rows/files
-        int fileDist = min(lf, 7 - lf);  // 0 on edge, 1 one step in, 2-3 center
-        int rankDist = min(lr, 7 - lr);
-        int outerDist = min(fileDist, rankDist);  // 0 = on edge, 1 = second row
-        if (outerDist == 0) bonus += 200;
-        else if (outerDist == 1) bonus += 100;
-
-        int df = abs((winnerSq & 7) - lf);
-        int dr = abs((winnerSq >> 3) - lr);
-        int kingDist = max(df, dr);
-        bonus += (7 - kingDist) * 50;
-
-        // Piece tropism: reward knight and bishop for proximity to the losing king.
-        uint64_t pieces = (winnerIsWhite ? allWhite : allBlack)
-                        & ~(winnerIsWhite ? whiteKing : blackKing);
-        while (pieces) {
-            int psq = __builtin_ctzll(pieces); pieces &= pieces - 1;
-            int pDist = max(abs((psq & 7) - lf), abs((psq >> 3) - lr));
-            bonus += (7 - pDist) * 15;
-        }
-
-        return winnerIsWhite == (turn == WHITE) ? bonus : -bonus;
-    }
-
     int getBoardEval() {
         if (evalCalculated) {
             return eval;
@@ -894,6 +803,20 @@ public:
                 return promIsLight != bishIsLight;
             };
 
+            // K+P vs K: opposition/key-squares mean this is NOT always winning
+            // (a rook pawn draws once the defending king reaches the corner) —
+            // a discontinuous condition GENERIC's "always mate" assumption misses.
+            // Consult the exact bitbase instead of guessing.
+            auto isKPKWin = [&](uint64_t ownKing, uint64_t pawns, uint64_t oppKing, bool ownIsWhite) -> bool {
+                int wksq = __builtin_ctzll(ownKing);
+                int wpsq = __builtin_ctzll(pawns);
+                int bksq = __builtin_ctzll(oppKing);
+                if (!ownIsWhite) { wksq ^= 56; wpsq ^= 56; bksq ^= 56; }        // strong side → White
+                if ((wpsq & 7) >= 4) { wksq ^= 7; wpsq ^= 7; bksq ^= 7; }       // pawn file → A-D
+                bool strongToMove = (turn == WHITE) == ownIsWhite;
+                return EndgameEval::kpkWin(wksq, wpsq, bksq, strongToMove ? 0 : 1);
+            };
+
             MatingType wType = blackBarePieces ? matingType(whiteQueens, whiteRooks, whiteBishops, whiteKnights, whitePawns) : DRAW;
             MatingType bType = whiteBarePieces ? matingType(blackQueens, blackRooks, blackBishops, blackKnights, blackPawns) : DRAW;
 
@@ -903,14 +826,28 @@ public:
             if (bType == GENERIC && !blackQueens && !blackRooks && !blackKnights
                 && isWrongRookPawnDraw(blackPawns, blackBishops, false)) bType = WRONG_ROOK_PAWN;
 
+            // Downgrade GENERIC to DRAW for exact K+P vs K when the bitbase says so
+            if (wType == GENERIC && !whiteQueens && !whiteRooks && !whiteBishops && !whiteKnights
+                && __builtin_popcountll(whitePawns) == 1
+                && !isKPKWin(whiteKing, whitePawns, blackKing, true))  wType = DRAW;
+            if (bType == GENERIC && !blackQueens && !blackRooks && !blackBishops && !blackKnights
+                && __builtin_popcountll(blackPawns) == 1
+                && !isKPKWin(blackKing, blackPawns, whiteKing, false)) bType = DRAW;
+
             if      (wType == DRAW           && blackBarePieces) eval = 0;
             else if (bType == DRAW           && whiteBarePieces) eval = 0;
             else if (wType == WRONG_ROOK_PAWN && blackBarePieces) eval = 0;
             else if (bType == WRONG_ROOK_PAWN && whiteBarePieces) eval = 0;
-            else if (wType == GENERIC)   eval += matingBonus(true);
-            else if (wType == KBN_MATE)  eval  = kbnMatingBonus(true);   // override: NNUE has no data here
-            else if (bType == GENERIC)   eval += matingBonus(false);
-            else if (bType == KBN_MATE)  eval  = kbnMatingBonus(false);  // override: NNUE has no data here
+            else if (wType == GENERIC)
+                eval += EndgameEval::matingBonus(true, turn == WHITE, whiteKing, blackKing, allWhite, allBlack);
+            else if (wType == KBN_MATE)  // override: NNUE has no data here
+                eval = EndgameEval::kbnMatingBonus(true, turn == WHITE, whiteKing, blackKing,
+                                                    whiteBishops, blackBishops, allWhite, allBlack, lightSquareMask);
+            else if (bType == GENERIC)
+                eval += EndgameEval::matingBonus(false, turn == WHITE, whiteKing, blackKing, allWhite, allBlack);
+            else if (bType == KBN_MATE)  // override: NNUE has no data here
+                eval = EndgameEval::kbnMatingBonus(false, turn == WHITE, whiteKing, blackKing,
+                                                    whiteBishops, blackBishops, allWhite, allBlack, lightSquareMask);
         }
 
         // K+minor vs K+pawns: the minor-piece side can never win (insufficient mating material).
@@ -1608,20 +1545,6 @@ private:
     static constexpr uint64_t lightSquareMask = 0x55AA55AA55AA55AAULL;
     static constexpr uint64_t fileAMask = 0x0101010101010101ULL;
     static constexpr uint64_t fileHMask = 0x8080808080808080ULL;
-
-    // KBN vs K: square table oriented toward target corner a1.
-    // Higher value = losing king is closer to being mated.
-    // Non-zero everywhere so the engine always has directional guidance.
-    static constexpr int kbnTable[64] = {
-         700,  560,  430,  310,  200,  110,   50,   10,
-         560,  440,  320,  220,  140,   70,   30,    0,
-         430,  320,  220,  140,   80,   40,   10,    0,
-         310,  220,  140,   80,   40,   10,    0,    0,
-         200,  140,   80,   40,   10,    0,    0,    0,
-         110,   70,   40,   10,    0,    0,    0,    0,
-          50,   30,   10,    0,    0,    0,    0,    0,
-          10,    0,    0,    0,    0,    0,    0,    0,
-    };
 
     static constexpr int knightMobilityWeight = 4;
     static constexpr int bishopMobilityWeight = 5;

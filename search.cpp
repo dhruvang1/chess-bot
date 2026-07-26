@@ -578,8 +578,15 @@ class Search {
             && abs(ttEval) < BoardType::mateThreshold) {
             int sBeta = ttEval - 2 * depth;
             int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, true, ttMove);
-            if (!shouldStop && sScore < sBeta)
+            if (!shouldStop && sScore < sBeta) {
                 singularExtension = (sScore < sBeta - depth * 3) ? 2 : 1;
+            } else if (!shouldStop && sScore >= beta && abs(sScore) < BoardType::mateThreshold) {
+                // Multi-cut: ttMove is assumed to fail high (that's the premise of this
+                // whole check), and this reduced search excluding it shows some OTHER
+                // move also fails high over the real beta. Two+ moves cut here, so the
+                // node isn't singular — prune the whole subtree instead of searching it.
+                return sScore;
+            }
         }
 
         uint16_t counterMove = MOVE_NONE;
