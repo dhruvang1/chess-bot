@@ -15,6 +15,7 @@ int main(int argc, char* argv[]) {
             nnuePath = argv[++i];
         }
     }
+    initLMR();  // must run once, single-threaded, before any Search worker threads spawn
     auto* uci = new Uci(datagen, nnuePath);
     while(true) {
         string msg;

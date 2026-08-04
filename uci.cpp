@@ -7,6 +7,7 @@
 #include <chrono>
 #include <unistd.h>
 #include "search.cpp"
+#include "threadpool.cpp"
 
 using namespace std;
 
@@ -14,7 +15,7 @@ class Uci {
 
     private:
     BoardType board;
-    Search search;
+    SearchThreadPool pool;
     int maxDepth = 64;
     int moves = 0;
     bool fromFen = false;
@@ -81,6 +82,7 @@ class Uci {
             cout << "id author Dhruvang" << endl;
             cout << "option name MaxDepth type spin default 64 min 1 max 64" << endl;
             cout << "option name Hash type spin default 320 min 1 max 65536" << endl;
+            cout << "option name Threads type spin default 1 min 1 max 128" << endl;
             cout << "option name NNUEPath type string default <empty>" << endl;
             cout << "uciok" << endl;
         } else if (msg == "isready") {
@@ -90,9 +92,11 @@ class Uci {
             if (tokens.size() >= 5 && tokens[1] == "name" && tokens[3] == "value") {
                 if (tokens[2] == "MaxDepth") {
                     maxDepth = stoi(tokens[4]);
-                    search.maxSearchDepth = maxDepth;
+                    pool.setMaxDepth(maxDepth);
                 } else if (tokens[2] == "Hash") {
                     Search::resizeTT(stoi(tokens[4]));
+                } else if (tokens[2] == "Threads") {
+                    pool.setThreads(stoi(tokens[4]));
                 } else if (tokens[2] == "NNUEPath") {
                     // join remaining tokens to support paths with spaces
                     string path;
@@ -110,8 +114,8 @@ class Uci {
             }
         } else if (msg == "ucinewgame") {
             board = BoardType();
-            search = Search();
-            search.maxSearchDepth = maxDepth;
+            pool.newGame();
+            pool.setMaxDepth(maxDepth);
             moves = 0;
             fromFen = false;
             openingFen = "";
@@ -181,7 +185,7 @@ class Uci {
 
             string bestMove;
             if (tokens.size() > ti + 1 && tokens[ti] == "depth") {
-                bestMove = search.getBestMove(board, stoi(tokens[ti + 1]));
+                bestMove = pool.search(board, stoi(tokens[ti + 1]));
             } else if (!isSelfplay) {
                 int whiteTime = 60 * 1000;
                 int blackTime = 60 * 1000;
@@ -201,10 +205,10 @@ class Uci {
                     if (openingsBlack.find(firstMove) != openingsBlack.end()) {
                         bestMove = openingsBlack[firstMove][rand() % openingsBlack[firstMove].size()];
                     } else {
-                        bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
+                        bestMove = pool.search(board, whiteTime, blackTime, whiteInc, blackInc);
                     }
                 } else {
-                    bestMove = search.getBestMove(board, whiteTime, blackTime, whiteInc, blackInc);
+                    bestMove = pool.search(board, whiteTime, blackTime, whiteInc, blackInc);
                 }
             }
 
@@ -217,7 +221,7 @@ class Uci {
                 cout << "fen " << posFen << "\n";
             } else {
                 if (datagen) {
-                    int eval = search.lastEval;
+                    int eval = pool.lastEval();
                     if (board.turn == BoardType::BLACK) eval = -eval;
                     datagenFile << board.getFen() << " | " << eval << "\n";
                     board.processMove(bestMove);
@@ -252,8 +256,8 @@ class Uci {
 
             cout << "----ordered moves----" << endl;
             uint16_t noMove = MOVE_NONE;
-            search.setBoard(board);
-            search.scoreMoves(moveList, noMove, noMove, noMove);
+            pool.main().setBoard(board);
+            pool.main().scoreMoves(moveList, noMove, noMove, noMove);
             for(auto& m : moveList) {
                 cout << format("mv:{} mp:{} cp:{} icp:{} ics:{} ipm:{}", moveToUci(m.move), m.movePiece, m.capturePiece, m.isCapture, m.isCastle, m.isPromotion) << endl;
             }

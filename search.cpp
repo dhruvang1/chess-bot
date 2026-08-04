@@ -1,3 +1,4 @@
+#pragma once
 #include <iostream>
 #include <string>
 #include <utility>
@@ -5,6 +6,7 @@
 #include <fstream>
 #include <cmath>
 #include <chrono>
+#include <atomic>
 
 #include "magicBoard.cpp"
 using BoardType = MagicBoard;
@@ -20,6 +22,7 @@ using namespace std::chrono;
 static int lmrTable[64][64];
 static bool lmrInitialized = false;
 
+// Must be called once, single-threaded, before any Search threads are spawned.
 static void initLMR() {
     if (lmrInitialized) return;
     lmrTable[0][0] = 0;
@@ -38,6 +41,9 @@ class Search {
 
     BoardType* board;
     static inline vector<TTEntry> ttable;
+    // Set by SearchThreadPool before searching; 0 = main thread (authoritative for
+    // reported bestmove/PV/info output), >0 = Lazy SMP helper threads.
+    int threadId = 0;
     uint16_t killers[128] = {};
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
@@ -138,7 +144,8 @@ class Search {
     }
 
     inline bool shouldQuit() {
-        if (shouldStop) {
+        if (shouldStop || globalStop.load(memory_order_relaxed)) {
+            shouldStop = true;
             return true;
         }
         auto currentTime = high_resolution_clock::now();
@@ -181,7 +188,7 @@ class Search {
         bestMoveNodes = 0;
         orderedMovesLastRound.clear();
         initKillers();
-        incrementTTAge();
+        // TT age is incremented once per `go` by SearchThreadPool.
         startTime = high_resolution_clock::now();
         softTimeLimitMs = LONG_MAX;
         hardTimeLimitMs = LONG_MAX;
@@ -234,14 +241,19 @@ class Search {
 
     }
 
-    void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine) {
+    // totalNodesForReport is the combined node count across every Lazy SMP thread,
+    // summed by the pool after all threads have finished. Everything else in this
+    // function's output (qnodes, pruning stats, cache stats) is thread 0's own.
+    void logSearchResult(int depthEvaluated, int bestMoveEval, const string& bestMoveLine, long totalNodesForReport) {
+        // Only the main thread (thread 0) reports UCI info lines; helper threads stay silent.
+        if (threadId != 0) return;
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
 
         long ms = duration.count();
-        long totalNodes = nodes + qNodes;
-        long nps = ms > 0 ? totalNodes * 1000 / ms : 0;
-        cout << "info depth " << depthEvaluated << " nodes " << totalNodes << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
+        // nodes/nps reflect the combined total across every Lazy SMP thread, not just this one.
+        long nps = ms > 0 ? totalNodesForReport * 1000 / ms : 0;
+        cout << "info depth " << depthEvaluated << " nodes " << totalNodesForReport << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " qnodes% " << (nodes + qNodes > 0 ? (100 * qNodes) / (nodes + qNodes) : 0) << endl;
         cout << "info nullAttempt " << nullAttempt << " nullCutoff " << nullSuccess
              << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
@@ -271,7 +283,9 @@ class Search {
 
         uint16_t forced = forcedRootMove();
         if (forced != MOVE_NONE) {
-            logSearchResult(0, 0, moveToUci(forced));
+            lastDepthEvaluated = 0;
+            lastEval = 0;
+            lastPvLine = moveToUci(forced);
             return moveToUci(forced);
         }
 
@@ -371,14 +385,30 @@ class Search {
             }
         }
 
-        logSearchResult(depthEvaluated, bestMoveEval, bestMoveLine);
+        lastDepthEvaluated = depthEvaluated;
         lastEval = bestMoveEval;
+        lastPvLine = bestMoveLine;
         return moveToUci(bestMove);
     }
 
     public:
     int lastEval = 0;
+    int lastDepthEvaluated = 0;
+    string lastPvLine;
     int maxSearchDepth = 64;
+
+    // Shared across all Search instances/threads: SearchThreadPool sets this once the
+    // main thread's search finishes, so helper threads unwind promptly.
+    static inline atomic<bool> globalStop{false};
+
+    // Used by SearchThreadPool to report an accurate total-nodes figure across all threads.
+    long totalNodes() const { return (long)nodes + qNodes; }
+
+    // Called by SearchThreadPool once every thread has finished, so the reported
+    // nodes/nps figure reflects the true combined count across all threads.
+    void reportResult(long totalNodesAcrossThreads) {
+        logSearchResult(lastDepthEvaluated, lastEval, lastPvLine, totalNodesAcrossThreads);
+    }
 
     // Resize and clear the shared TT to fit the requested number of megabytes.
     // Safe to call at any time; automatically adjusts TTKeySize/TTSize globals.
@@ -391,22 +421,24 @@ class Search {
         ttable = vector<TTEntry>(TTSize, TTEntry{});
     }
 
-    Search() {
-        if (isManual()) ofile.open("log.txt");
-        initLMR();
-        if (ttable.empty()) {
-            // First-ever construction: allocate at the current default size.
-            ttable.assign(TTSize, TTEntry{});
-        } else {
-            // Subsequent construction (e.g. ucinewgame): clear entries but keep the
-            // existing allocation size (which may have been set by resizeTT).
-            // Only reallocate if the size has changed to avoid redundant work.
-            if ((int)ttable.size() != TTSize) {
-                ttable = vector<TTEntry>(TTSize, TTEntry{});
-            } else {
-                std::ranges::fill(ttable, TTEntry{});
-            }
+    // Idempotent: only (re)allocates if the size is wrong. Safe to call from every
+    // worker's constructor (e.g. when SearchThreadPool grows the pool mid-game)
+    // without wiping TT contents other threads may already be relying on.
+    static void ensureTTAllocated() {
+        if ((int)ttable.size() != TTSize) {
+            ttable = vector<TTEntry>(TTSize, TTEntry{});
         }
+    }
+
+    // Unconditionally wipes the shared TT. Only call for an explicit new-game reset,
+    // never as a side effect of resizing the thread pool.
+    static void clearTT() {
+        ttable = vector<TTEntry>(TTSize, TTEntry{});
+    }
+
+    Search(int threadId = 0) : threadId(threadId) {
+        if (isManual()) ofile.open("log-" + to_string(threadId) + ".txt");
+        ensureTTAllocated();
     }
 
     void setBoard(BoardType& b) {
@@ -1080,7 +1112,8 @@ class Search {
 
         // Instrumentation: report peak magnitudes accumulated during the prior search
         // (before aging) so we can size a history cap against real data.
-        {
+        // Only thread 0 reports, to avoid interleaved output from Lazy SMP helper threads.
+        if (threadId == 0) {
             int hMax = 0, chMax = 0, ch2Max = 0, cpMax = 0;
             for (auto& row : history)
                 for (auto& v : row) hMax = std::max(hMax, std::abs(v));
