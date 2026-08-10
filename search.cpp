@@ -952,7 +952,17 @@ class Search {
         qNodes++;
         pvLength[ply] = 0;
 
-        if (shouldStop) return 0;
+        if (shouldStop || ((qNodes & 4095) == 0 && shouldQuit())) {
+            return 0;
+        }
+        
+        // Unlike negamax, the in-check evasion path below has no depth cutoff — a forced
+        // check sequence must otherwise resolve entirely (checkmate or leaving check) before
+        // returning. Repetition/50-move are the only real bounds on that, so they must be
+        // checked here too, not just in negamax.
+        if (board->isPositionRepeated() || board->isFiftyMoveDraw()) {
+            return 0;
+        }
 
         if (!board->isKingPresent()) {
             return -(BoardType::checkmateEval - ply);
@@ -960,8 +970,7 @@ class Search {
 
         bool inCheck = board->isKingInCheck();
 
-        // Only skip to standing pat at depth 0 when not in check — in check we must search evasions
-        if (depth == 0 && !inCheck) {
+        if (depth <= 0 && !inCheck) {
             return board->getBoardEval();
         }
 
