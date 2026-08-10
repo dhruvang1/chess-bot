@@ -733,6 +733,7 @@ class Search {
         static constexpr int lmpThresholdNotImp[] = {0, 4, 7, 11};
         const int* lmpThreshold = improving ? lmpThresholdImp : lmpThresholdNotImp;
         bool skipQuietMoves = false;
+        int moveIdx = -1;
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
             for (int j = i + 1; j < legalMoves.size(); j++) {
@@ -742,6 +743,7 @@ class Search {
             const Move& m = legalMoves[i];
             if (m.move == excludedMove) continue;
             if (!board->isLegalMove(m)) continue;   // skip pseudo-legal-but-illegal (pinned) moves
+            moveIdx++;
             bool isQuiet = !(m.isPromotion || m.isCapture);
 
             if (skipQuietMoves && isQuiet) {
@@ -750,7 +752,7 @@ class Search {
             }
 
             // late move pruning: at shallow depth, skip late quiet moves
-            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 3 && i >= lmpThreshold[depth]
+            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 3 && moveIdx >= lmpThreshold[depth]
                 && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
                 lmpPrune++;
                 continue;
@@ -758,7 +760,7 @@ class Search {
 
             // history pruning: once a quiet move's combined history score drops below the threshold,
             // skip all remaining quiets — they're ordered by score so all subsequent will be worse.
-            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 4 && i > 0 && m.score < -100 * depth) {
+            if (ply > 0 && !pvNode && isQuiet && !inCheck && depth <= 4 && moveIdx > 0 && m.score < -100 * depth) {
                 histLmpPrune++;
                 skipQuietMoves = true;
                 continue;
@@ -768,7 +770,7 @@ class Search {
             // material swing can't raise it, skip quiet moves.
             // Improving → position trending up, might recover → add margin (prune less).
             static constexpr int futilityMargin[] = {0, 150, 300, 450, 600};
-            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && i > 0
+            if (ply > 0 && isQuiet && !inCheck && depth <= 4 && moveIdx > 0
                 && !pvNode
                 && abs(alpha) < BoardType::mateThreshold
                 && staticEval + futilityMargin[depth] + (improving ? 80 : 0) <= alpha) {
@@ -779,7 +781,7 @@ class Search {
             // SEE pruning: skip moves that lose too much material in the exchange.
             // Only call SEE if the destination is actually defended (isSquareThreatened gate)
             // to avoid the expensive getAttackersTo call on uncontested squares.
-            if (ply > 0 && !pvNode && !inCheck && depth <= 6 && i > 0) {
+            if (ply > 0 && !pvNode && !inCheck && depth <= 6 && moveIdx > 0) {
                 // Quiet SEE threshold: -50 * d * sqrt(d), precomputed for d=0..6
                 static constexpr int quietSeeThreshold[] = {0, -50, -141, -260, -400, -559, -735};
                 int seeThreshold = isQuiet ? quietSeeThreshold[depth] : -100 * depth;
@@ -809,7 +811,7 @@ class Search {
             board->processMove(m.move);
             int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
-            if (i == 0) {
+            if (moveIdx == 0) {
                 // first child: PV child if pvNode, else expected all-node (parent is cut → child is all)
                 eval = -negamax(-beta, -alpha, depth - 1 + ext, ply + 1, true, pvNode ? false : !cutNode);
             } else {
@@ -817,8 +819,8 @@ class Search {
                 int nextDepth = depth - 1;
                 bool reducible = isQuiet || (m.isLosingCapture && !m.isPromotion);
                 // inCheck refers to pre-move position: don't reduce when responding to check
-                if (i >= 2 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
-                    int R = lmrTable[min(depth, 63)][min(i, 63)];
+                if (moveIdx >= 2 && reducible && depth >= 3 && !inCheck && m.move != killers[2*ply] && m.move != killers[2*ply+1] && m.move != counterMove) {
+                    int R = lmrTable[min(depth, 63)][min(moveIdx, 63)];
                     if (pvNode) R -= 1;
 
                     // Improving: position is trending up, eval is reliable — search deeper.
