@@ -432,8 +432,9 @@ class Search {
 
     // Unconditionally wipes the shared TT. Only call for an explicit new-game reset,
     // never as a side effect of resizing the thread pool.
+    // Clears in place rather than reallocating to reuse the existing allocation 
     static void clearTT() {
-        ttable = vector<TTEntry>(TTSize, TTEntry{});
+        std::fill(ttable.begin(), ttable.end(), TTEntry{});
     }
 
     Search(int threadId = 0) : threadId(threadId) {
