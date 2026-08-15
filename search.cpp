@@ -244,6 +244,21 @@ class Search {
 
     }
 
+    // Emitted once per completed iterative-deepening iteration, so node growth can be
+    // diffed depth-by-depth against Stockfish's own per-depth "info depth" lines (SF
+    // emits one per ID iteration too). Uses this thread's own node count rather than
+    // the pool-wide total used by logSearchResult below -- that total isn't known until
+    // every Lazy SMP thread has joined, but own-thread nodes are available immediately.
+    // Exact for the common Threads=1 analysis/SPRT case; a slight undercount otherwise.
+    void logIterationResult(int depth, int eval, const string& line) {
+        if (threadId != 0) return;
+        auto stopTime = high_resolution_clock::now();
+        long ms = duration_cast<milliseconds>(stopTime - startTime).count();
+        long ownNodes = nodes + qNodes;
+        long nps = ms > 0 ? ownNodes * 1000 / ms : 0;
+        cout << "info depth " << depth << " seldepth " << lastSelDepth << " nodes " << ownNodes << " nps " << nps << " time " << ms << " score cp " << eval << " pv " << line << endl;
+    }
+
     // totalNodesForReport is the combined node count across every Lazy SMP thread,
     // summed by the pool after all threads have finished. Everything else in this
     // function's output (qnodes, pruning stats, cache stats) is thread 0's own.
@@ -360,6 +375,8 @@ class Search {
             lastSelDepth = selDepth;
             prevBestMove = bestMove;
             bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
+
+            logIterationResult(depth, eval, bestMoveLine);
 
             if (eval >= BoardType::mateThreshold && depth >= 7) {
                 break;
