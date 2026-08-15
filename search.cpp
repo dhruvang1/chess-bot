@@ -91,6 +91,9 @@ class Search {
 
     int nodes = 0;
     int qNodes = 0;
+    // Deepest ply reached along the PV, including quiescence — UCI "seldepth".
+    // Reset once per iterative-deepening depth (like Stockfish), not per aspiration retry.
+    int selDepth = 0;
     int nullSuccess = 0;
     int nullAttempt = 0;
     int pvsSuccess = 0;
@@ -253,7 +256,7 @@ class Search {
         long ms = duration.count();
         // nodes/nps reflect the combined total across every Lazy SMP thread, not just this one.
         long nps = ms > 0 ? totalNodesForReport * 1000 / ms : 0;
-        cout << "info depth " << depthEvaluated << " nodes " << totalNodesForReport << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
+        cout << "info depth " << depthEvaluated << " seldepth " << lastSelDepth << " nodes " << totalNodesForReport << " nps " << nps << " time " << ms << " score cp " << bestMoveEval << " pv " << bestMoveLine << endl;
         cout << "info qnodes " << qNodes << " qnodes% " << (nodes + qNodes > 0 ? (100 * qNodes) / (nodes + qNodes) : 0) << endl;
         cout << "info nullAttempt " << nullAttempt << " nullCutoff " << nullSuccess
              << " nullSuccess% " << (nullAttempt > 0 ? (100 * nullSuccess) / nullAttempt : 0) << endl;
@@ -285,6 +288,7 @@ class Search {
         if (forced != MOVE_NONE) {
             lastDepthEvaluated = 0;
             lastEval = 0;
+            lastSelDepth = 0;
             lastPvLine = moveToUci(forced);
             return moveToUci(forced);
         }
@@ -310,6 +314,7 @@ class Search {
             }
 
             iterDepth = depth;
+            selDepth = 0;
             const MoveList savedMoves = orderedMovesLastRound;
             int nodesAtDepthStart = nodes;
             int eval;
@@ -352,6 +357,7 @@ class Search {
             depthEvaluated = depth;
             bestMoveLine = pvToString();
             bestMoveEval = eval;
+            lastSelDepth = selDepth;
             prevBestMove = bestMove;
             bestMove = pvLength[0] > 0 ? pvTable[0][0] : MOVE_NONE;
 
@@ -394,6 +400,7 @@ class Search {
     public:
     int lastEval = 0;
     int lastDepthEvaluated = 0;
+    int lastSelDepth = 0;
     string lastPvLine;
     int maxSearchDepth = 64;
 
@@ -480,6 +487,7 @@ class Search {
         pvLength[ply] = 0;
         evalStack[ply] = NEGATIVE_NUM;  // default sentinel; overwritten below if not in check
         bool pvNode = (alpha + 1 < beta);
+        if (pvNode && selDepth < ply + 1) selDepth = ply + 1;
 
         uint16_t prevMove  = (ply >= 1) ? moveStack[ply - 1] : MOVE_NONE;
         char     prevPiece = (ply >= 1) ? pieceStack[ply - 1] : ' ';
@@ -954,6 +962,7 @@ class Search {
     int quiescenceSearch(int alpha, int beta, int depth, int ply) {
         qNodes++;
         pvLength[ply] = 0;
+        if (alpha + 1 < beta && selDepth < ply + 1) selDepth = ply + 1;
 
         if (shouldStop || ((qNodes & 4095) == 0 && shouldQuit())) {
             return 0;
