@@ -698,6 +698,61 @@ public:
         return isKingInCheck(turn);
     }
 
+    // Cheap check-detection for a pseudo-legal move: does it give check to the
+    // opponent, computed via bitboard ray math (no make/unmake) so it's affordable
+    // to call for every qsearch candidate. Mirrors isLegalMove's pin/ray machinery,
+    // just aimed at the opponent's king instead of our own. Covers both direct
+    // checks (the moved/promoted piece's new attack pattern hits the king) and
+    // discovered checks (vacating 'from' unveils one of our sliders).
+    bool givesCheck(const Move& m) {
+        const int from = ::fromSq(m.move);
+        const int to   = ::toSq(m.move);
+        const Color us   = turn;
+        const Color them = flipColor(us);
+        const uint64_t fromBB = sqToBB(from);
+        const uint64_t toBB   = sqToBB(to);
+
+        const uint64_t theirKingBB = (them == WHITE) ? whiteKing : blackKing;
+        const int kingSq = __builtin_ctzll(theirKingBB);
+
+        const bool isEP = isPawn(m.movePiece) && colOf(from) != colOf(to) && !(occupied & toBB);
+        uint64_t occAfter = (occupied ^ fromBB) | toBB;
+        if (isEP) {
+            const int capSq = (us == WHITE) ? (to - 8) : (to + 8);
+            occAfter ^= sqToBB(capSq);
+        }
+
+        // Direct check: the moved piece's (or promoted piece's) new attack pattern.
+        char movedType = m.isPromotion ? toupper(promoChar(m.move)) : toupper(m.movePiece);
+        switch (movedType) {
+            case 'P': if (pawnAttackTable[them][kingSq] & toBB) return true; break;
+            case 'N': if (knightAttackTable[to] & theirKingBB) return true; break;
+            case 'B': if (getBishopAttacks(to, occAfter) & theirKingBB) return true; break;
+            case 'R': if (getRookAttacks(to, occAfter) & theirKingBB) return true; break;
+            case 'Q': if ((getBishopAttacks(to, occAfter) | getRookAttacks(to, occAfter)) & theirKingBB) return true; break;
+            default: break;  // king moves never give check
+        }
+
+        // Discovered check: with 'from' vacated, does one of our sliders now attack
+        // their king? Reposition the mover within these sets if it's itself a slider
+        // (or becomes one via promotion), so a slider sliding further along its own
+        // line is still found by the ray-cast rather than missed as "moved away".
+        uint64_t ourBQ = (us == WHITE) ? (whiteBishops | whiteQueens) : (blackBishops | blackQueens);
+        uint64_t ourRQ = (us == WHITE) ? (whiteRooks   | whiteQueens) : (blackRooks   | blackQueens);
+        if (isBishop(m.movePiece) || isQueen(m.movePiece)) ourBQ = (ourBQ & ~fromBB) | toBB;
+        if (isRook(m.movePiece)   || isQueen(m.movePiece)) ourRQ = (ourRQ & ~fromBB) | toBB;
+        if (m.isPromotion) {
+            char p = toupper(promoChar(m.move));
+            if (p == 'B' || p == 'Q') ourBQ |= toBB;
+            if (p == 'R' || p == 'Q') ourRQ |= toBB;
+        }
+
+        if (getBishopAttacks(kingSq, occAfter) & ourBQ) return true;
+        if (getRookAttacks(kingSq, occAfter)   & ourRQ) return true;
+
+        return false;
+    }
+
     bool isSquareAttackedByColor(int sq, Color color) {
         uint64_t pawns, knights, bishops, rooks, queens, king;
         if (color == WHITE) {

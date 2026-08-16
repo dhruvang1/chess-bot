@@ -110,6 +110,10 @@ class Search {
     int futilePrune = 0;
     int probcutPrune = 0;
     int seePrune = 0;
+    // Diagnostic-only (not gating anything): total qsearch loop iterations vs
+    // moves actually recursed into, to directly measure qsearch breadth per call.
+    int qMovesConsidered = 0;
+    int qMovesSearched = 0;
     int aspirationFails = 0;
     int qCacheHit = 0;
     int bestMoveNodes = 0;
@@ -186,6 +190,8 @@ class Search {
         futilePrune = 0;
         probcutPrune = 0;
         seePrune = 0;
+        qMovesConsidered = 0;
+        qMovesSearched = 0;
         aspirationFails = 0;
         qCacheHit = 0;
         bestMoveNodes = 0;
@@ -279,6 +285,8 @@ class Search {
         cout << "info lmr " << lmrSuccess << " " << lmrFailure << " lmr% " << (lmrSuccess + lmrFailure > 0 ? (100 * lmrSuccess) / (lmrSuccess + lmrFailure) : 0) << endl;
         cout << "info delta " << deltaPrune << " lmp " << lmpPrune << " histLmp " << histLmpPrune << " futile " << futilePrune << " probcut " << probcutPrune << " seePrune " << seePrune << " aspFail " << aspirationFails << endl;
         cout << "info qcache " << qCacheHit << endl;
+        cout << "info qBreadth considered " << qMovesConsidered << " searched " << qMovesSearched
+             << " avgSearchedPerCall " << (qNodes > 0 ? (float)qMovesSearched / qNodes : 0.0f) << endl;
         cout << "info cache " << "save " << cacheSave << " " << cacheSaveSuccess << " hit " << cacheHit << " " << cacheHit - cacheFutileHit
              << " " << (cacheHit > 0 ? (100*(cacheHit - cacheFutileHit))/cacheHit : 0) << endl;
     }
@@ -500,7 +508,6 @@ class Search {
     }
 
     int negamax(int alpha, int beta, int depth, int ply, bool nullAllowed, bool cutNode = false, uint16_t excludedMove = MOVE_NONE) {
-        nodes++;
         pvLength[ply] = 0;
         evalStack[ply] = NEGATIVE_NUM;  // default sentinel; overwritten below if not in check
         bool pvNode = (alpha + 1 < beta);
@@ -729,6 +736,7 @@ class Search {
                 if (board->see(m) < PROBCUT_MARGIN) continue;
                 moveStack[ply] = m.move;
                 pieceStack[ply] = m.movePiece;
+                nodes++;
                 board->processMove(m.move);
                 int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, true);
                 board->undoMove();
@@ -834,6 +842,7 @@ class Search {
             int nodesBefore = (ply == 0) ? nodes : 0;
             moveStack[ply] = m.move;
             pieceStack[ply] = m.movePiece;
+            nodes++;
             board->processMove(m.move);
             int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
@@ -977,7 +986,6 @@ class Search {
 
 
     int quiescenceSearch(int alpha, int beta, int depth, int ply) {
-        qNodes++;
         pvLength[ply] = 0;
         if (alpha + 1 < beta && selDepth < ply + 1) selDepth = ply + 1;
 
@@ -1046,6 +1054,7 @@ class Search {
             }
             const Move& m = legalMoves[i];
             bool isQuiet = !(m.isCapture || m.isPromotion);
+            qMovesConsidered++;
 
             // Once we've found a non-losing evasion, stop searching quiet evasions
             if (inCheck && maxEval > -BoardType::mateThreshold && isQuiet) break;
@@ -1061,6 +1070,8 @@ class Search {
 
             if (!board->isLegalMove(m)) continue;
 
+            qMovesSearched++;
+            qNodes++;
             board->processMove(m.move);
             int eval = -quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
             board->undoMove();
