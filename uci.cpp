@@ -72,6 +72,7 @@ class Uci {
 
     void handle(const string &msg) {
         vector<string> tokens = tokenize(msg);
+        if (tokens.empty()) return;  // blank line -- tokens[0] below would be UB
 
         if (msg == "quit") {
             if (datagen) datagenFile.flush();

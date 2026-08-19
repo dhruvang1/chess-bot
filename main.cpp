@@ -17,9 +17,8 @@ int main(int argc, char* argv[]) {
     }
     initLMR();  // must run once, single-threaded, before any Search worker threads spawn
     auto* uci = new Uci(datagen, nnuePath);
-    while(true) {
-        string msg;
-        getline(cin, msg);
+    string msg;
+    while (getline(cin, msg)) {
         uci->handle(msg);
     }
 }

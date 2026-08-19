@@ -129,6 +129,7 @@ class Search {
     int myIncMs = 0;      // increment for current time control, used for timeScale floor
     MoveList orderedMovesLastRound;
     uint16_t prevBestMove = MOVE_NONE;
+    int bestMoveStability = 0;  // consecutive completed iterations with the same best move
     ofstream ofile;
 
     inline void updatePv(int ply, uint16_t move) {
@@ -195,6 +196,7 @@ class Search {
         aspirationFails = 0;
         qCacheHit = 0;
         bestMoveNodes = 0;
+        bestMoveStability = 0;
         orderedMovesLastRound.clear();
         initKillers();
         // TT age is incremented once per `go` by SearchThreadPool.
@@ -230,7 +232,7 @@ class Search {
         int divisor = (int)(divisorNoInc * (1.0f - t) + divisorFullInc * t);
         softTimeLimitMs = myTimeLeft / divisor + ((long)myInc * 0.8f);
 
-        // limit the soft time limit to 60% of the time left
+        // limit the soft time limit to 50% of the time left
         softTimeLimitMs = min(softTimeLimitMs, (long)(myTimeLeft * 0.5f));
 
 
@@ -244,10 +246,12 @@ class Search {
             hardTimeLimitMs = 2 * softTimeLimitMs;
         } else {
             // plenty of time left — normal extension + proportional reserve
-            long reserve = myTimeLeft / 20;  // keep 20% of clock as cushion
+            long reserve = myTimeLeft / 20;  // keep 5% of clock as cushion
             hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - reserve);
         }
 
+        softTimeLimitMs = max(softTimeLimitMs, 5L);
+        hardTimeLimitMs = max(hardTimeLimitMs, 10L);
     }
 
     // Emitted once per completed iterative-deepening iteration, so node growth can be
@@ -390,30 +394,49 @@ class Search {
                 break;
             }
 
-            // If score is falling, draw from the time bank to keep searching.
-            // Boost relative to soft limit: 100cp drop ≈ 1x soft limit extra; capped at half the bank.
-            if (softTimeLimitMs != LONG_MAX && timeBankMs > 0 && depth >= 7) {
-                const int drop = prevIterEval - eval;  // positive = score fell
-                if (drop > 10) {
-                    const long boost = min({softTimeLimitMs * (long)drop / 50, timeBankMs / 2, 2 * softTimeLimitMs});
-                    softTimeLimitMs += boost;
-                    timeBankMs -= boost;
-                }
-            }
-            prevIterEval = eval;
+            if (bestMove == prevBestMove) bestMoveStability++;
+            else bestMoveStability = 0;
 
-            // Compute timeScale for next iteration: high nodeFraction = confident = exit earlier,
-            // low nodeFraction = uncertain = allow more time. Clamped to [0.5, 1.5].
-            // Floor is also increment-aware: ensure we spend at least slightly more than the
-            // increment so the clock actually decreases in bullet/blitz games.
+            // Soft-limit multiplier from node fraction, best-move stability, and score trend.
             if (softTimeLimitMs != LONG_MAX) {
                 int depthNodes = nodes - nodesAtDepthStart;
                 float nodeFraction = (float)bestMoveNodes / max(1, depthNodes);
-                float incFloor = softTimeLimitMs > 0
-                    ? (float)(myIncMs * 5 / 4) / (float)softTimeLimitMs  // spend at least 1.25x increment
-                    : 0.0f;
-                timeScale = max({0.5f, incFloor, 1.5f - 1.5f * nodeFraction});
+                bool obviousMove = nodeFraction > 0.85f;
+
+                float nodeMult = 1.5f - 1.5f * nodeFraction;
+
+                float stabilityMult = 1.0f;
+                float scoreMult = 1.0f;
+                if (!obviousMove && depth >= 7) {
+                    stabilityMult = clamp(0.85f + 0.5f * powf(0.5f, (float)bestMoveStability), 0.85f, 1.35f);
+
+                    const int drop = prevIterEval - eval;  // positive = score fell
+                    if (drop > 10) {
+                        scoreMult = clamp(1.0f + (float)drop / 300.0f, 1.0f, 1.4f);
+                    }
+                }
+
+                // Ramp 0.5 -> 0.3 across depth 12-25 on obvious moves, so deep rapid/classical
+                // searches can spend less
+                float depthRampFraction = 0.5f;
+                if (obviousMove) {
+                    float depthT = clamp(((float)depth - 12.0f) / (25.0f - 12.0f), 0.0f, 1.0f);
+                    depthRampFraction = 0.5f + depthT * (0.3f - 0.5f);
+                }
+                float depthRampMs = (float)softTimeLimitMs * depthRampFraction;
+
+                // Floor spend relative to increment so the clock doesn't drift up; scaled by
+                // the same depth ramp so it also relaxes once obvious+deep.
+                float incrementMinMs = (float)myIncMs * 1.25f * (2.0f * depthRampFraction);
+
+                // Cap below the 2x ceiling first -- clamp() requires lo <= hi.
+                float minSpendMs = min(max(depthRampMs, incrementMinMs), (float)softTimeLimitMs * 2.0f);
+
+                float targetMs = clamp((float)softTimeLimitMs * nodeMult * stabilityMult * scoreMult,
+                                        minSpendMs, (float)softTimeLimitMs * 2.0f);
+                timeScale = targetMs / (float)softTimeLimitMs;
             }
+            prevIterEval = eval;
         }
 
         lastDepthEvaluated = depthEvaluated;
