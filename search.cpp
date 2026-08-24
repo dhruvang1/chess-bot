@@ -756,6 +756,7 @@ class Search {
                 const Move& m = pcMoves[i];
                 if (!m.isCapture && !m.isPromotion) continue;
                 if (m.move == excludedMove) continue;
+                if (!board->isLegalMove(m)) continue;   // skip pseudo-legal-but-illegal (pinned) moves
                 if (board->see(m) < PROBCUT_MARGIN) continue;
                 moveStack[ply] = m.move;
                 pieceStack[ply] = m.movePiece;
