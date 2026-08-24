@@ -692,7 +692,7 @@ class Search {
             scoreMoves(legalMoves, ttMove, killers[0], killers[1], counterMove);
             for (auto& m : legalMoves) {
                 if (m.move == prevBestMove && m.move != ttMove)
-                    m.score = 59000 * 20000;
+                    m.score = SCORE_PREV_BEST;
             }
         } else {
             board->getLegalMoves(legalMoves, false);
@@ -1225,15 +1225,35 @@ class Search {
                     val >>= 1;
     }
 
-    // Assigns a score to each move for ordering purposes. Actual ordering is done lazily
-    // via selection sort in negamax. Priority (highest to lowest):
+    // Move ordering score bands (highest to lowest), spaced with enough margin that no
+    // in-band term can ever cross into a neighboring band:
+    //   - Quiet moves score history+contHist+contHist2, each gravity-capped at MAX_HISTORY
+    //     (16384), so their sum is bounded by +-3*MAX_HISTORY = +-49152.
+    //   - Capture moves score mvvlva +- captHist, where captHist is bounded by +-MAX_HISTORY
+    //     (16384) and mvvlva's smallest gap between two distinct victim piece values is
+    //     scaled by MVVLVA_MULT to stay well clear of that noise (see margin check below).
+    // Bands, highest to lowest:
     //   1. TT move         — best move from a previous search of this position
     //   2. Promotions      — always winning or very likely winning
     //   3. Good captures   — winning/neutral exchanges by SEE, ranked by MVV-LVA
     //   4. Killer 1/2      — quiet moves that caused beta cutoffs at this ply recently
     //   5. Counter move    — quiet move that refuted the opponent's last move historically
-    //   6. Quiet moves     — ranked by history + 1-ply continuation history
+    //   6. Quiet moves     — ranked by history + 1-ply/2-ply continuation history
     //   7. Losing captures — losing exchanges by SEE, ranked by MVV-LVA
+    static constexpr int SCORE_TT            = 5'000'000;
+    static constexpr int SCORE_PROMOTION     = 4'000'000;
+    static constexpr int SCORE_GOOD_CAPTURE  =   200'000; // + mvvlva [~244K..2.94M] + captHist
+    static constexpr int SCORE_KILLER1       =   120'000; // > max quiet score (49152), < min good capture (447704)
+    static constexpr int SCORE_KILLER2       =   110'000;
+    static constexpr int SCORE_COUNTERMOVE   =   100'000;
+    static constexpr int SCORE_LOSING_CAPTURE = -3'500'000; // + mvvlva + captHist, still < min quiet score
+    // Root-only: previous iteration's best move, boosted to sit just below the actual TT
+    // move (so a fresh TT hit still wins) but above everything else. Derived from SCORE_TT
+    // rather than a standalone constant so it can't drift out of range if SCORE_TT changes.
+    static constexpr int SCORE_PREV_BEST = (SCORE_TT + SCORE_PROMOTION) / 2;
+    // Must clear the worst-case mover(20000)+2*captHist(32768) swing on the smallest real
+    // victim gap (22, bishop vs knight) so MVV-LVA can't be reordered: 3000*22=66000 > 52768.
+    static constexpr int MVVLVA_MULT = 3000;
     void scoreMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
                       uint16_t counterMove = MOVE_NONE,
                       char prevPc = ' ', int prevSq = -1,
@@ -1244,16 +1264,17 @@ class Search {
         int pi  = hasContHist  ? pieceIdx(prevPc)  : 0;
         int p2i = hasCont2Hist ? pieceIdx(prev2Pc) : 0;
         for (auto& m : legalMoves) {
-            if (m.move == ttMove)               { m.score = 60000 * 20000; continue; }
-            if (m.isPromotion)                  { m.score = 50000 * 20000; continue; }
+            if (m.move == ttMove)               { m.score = SCORE_TT; continue; }
+            if (m.isPromotion)                  { m.score = SCORE_PROMOTION; continue; }
             if (m.isCapture) {
                 m.isLosingCapture = board->see(m) < 0;
-                int mvvlva = abs(40000 * pv[m.capturePiece] + pv[m.movePiece]);
+                // abs() for color-independent material-magnitude ranking.
+                int mvvlva = abs(MVVLVA_MULT * pv[m.capturePiece] + pv[m.movePiece]);
                 int ch = captHist[pieceIdx(m.movePiece)][toSq(m.move)][pieceIdx(m.capturePiece) / 2];
-                m.score = m.isLosingCapture ? -(50000 * 20000) + mvvlva + ch : 30000 * 20000 + mvvlva + ch;
-            } else if (m.move == killer1)       m.score = 10000;
-            else if (m.move == killer2)         m.score = 9000;
-            else if (m.move == counterMove)     m.score = 8000;
+                m.score = m.isLosingCapture ? SCORE_LOSING_CAPTURE + mvvlva + ch : SCORE_GOOD_CAPTURE + mvvlva + ch;
+            } else if (m.move == killer1)       m.score = SCORE_KILLER1;
+            else if (m.move == killer2)         m.score = SCORE_KILLER2;
+            else if (m.move == counterMove)     m.score = SCORE_COUNTERMOVE;
             else {
                 int sq = toSq(m.move);
                 int ci = pieceIdx(m.movePiece);
