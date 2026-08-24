@@ -1105,7 +1105,22 @@ public:
 
             if (max(-gain[depth - 1], gain[depth]) < 0) break;
 
-            uint64_t attackerBB = getLeastValuableAttacker(attackers, sideToMove, attackerVal);
+            // Skip attackers that are absolutely pinned -- removing one from occ would newly
+            // expose its own king to a slider it wasn't already exposed to. Mirrors the pin
+            // check isLegalMove() does via occAfter, reused here since this loop already
+            // maintains a shrinking `occ` as pieces are removed from the exchange.
+            uint64_t candidates = attackers;
+            uint64_t attackerBB;
+            while ((attackerBB = getLeastValuableAttacker(candidates, sideToMove, attackerVal))) {
+                uint64_t kingBB = (sideToMove == WHITE) ? whiteKing : blackKing;
+                if (!kingBB) break;   // no king on board (test positions) -- nothing to pin against
+                int kSq = __builtin_ctzll(kingBB);
+                uint64_t enemySliders = ((sideToMove == WHITE) ? allBlack : allWhite) & (diagonals | parallels);
+                bool attackedBefore = getAttackersTo(kSq, occ) & enemySliders;
+                bool attackedAfter  = getAttackersTo(kSq, occ ^ attackerBB) & enemySliders;
+                if (!attackedBefore && attackedAfter) { candidates &= ~attackerBB; continue; } // pinned, try next
+                break;   // legal
+            }
             if (!attackerBB) break;
 
             occ ^= attackerBB;
