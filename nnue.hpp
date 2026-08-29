@@ -39,7 +39,7 @@
 // ---------------------------------------------------------------------------
 
 static constexpr int NNUE_INPUT          = 12288; // 768 * 16
-static constexpr int NNUE_HIDDEN         = 1024;
+static constexpr int NNUE_HIDDEN         = 1280;
 static constexpr int NNUE_OUTPUT_BUCKETS = 8;
 static constexpr int NNUE_QA             = 255;
 static constexpr int NNUE_QB             = 64;

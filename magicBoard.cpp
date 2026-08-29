@@ -20,11 +20,11 @@ using namespace std;
 // accumulator instead of rebuilding from scratch.  Amortises full-rebuild
 // cost: typically 1-3 feature ops instead of ~30.
 struct alignas(64) BucketCacheEntry {
-    int16_t acc[1024]; // NNUE_HIDDEN; static_assert below keeps this in sync
+    int16_t acc[1280]; // NNUE_HIDDEN; static_assert below keeps this in sync
     uint64_t bitboards[12]; // W:P,N,B,R,Q,K  B:P,N,B,R,Q,K
     bool valid = false;
 };
-static_assert(NNUE_HIDDEN == 1024, "update BucketCacheEntry::acc size to match NNUE_HIDDEN");
+static_assert(NNUE_HIDDEN == 1280, "update BucketCacheEntry::acc size to match NNUE_HIDDEN");
 
 // Lazy accumulator stack: processMove() stores feature deltas per ply,
 // getBoardEval() applies them on demand. undoMove() is completely free of
