@@ -167,7 +167,8 @@ public:
         if (nnueLoaded) resetAccBias();
         for (int sq = 0; sq < 64; sq++) board[sq] = ' ';
         prevMoves.clear();
-        hashHistory.clear();
+        prevMoves.reserve(1024);  // game history + deepest search line, allocation-free
+        rootPly = 0;
         boardHash = 0;
         mgEval = 0;
         egEval = 0;
@@ -246,7 +247,6 @@ public:
         if (turn == BLACK) boardHash ^= hashHelper.getTurnHash();
         if (enPassantCol != -1) boardHash ^= hashHelper.getEnPassantHash(enPassantCol);
 
-        hashHistory[boardHash]++;
         if (nnueLoaded) rebuildAccumulator();
     }
 
@@ -447,8 +447,6 @@ public:
         allBlack = blackPawns | blackKnights | blackBishops | blackRooks | blackQueens | blackKing;
         occupied = allWhite | allBlack;
         flipTurn();
-
-        hashHistory[boardHash]++;
     }
 
     void undoMove() {
@@ -459,11 +457,6 @@ public:
 
         // Flip turn first (so 'turn' = the side that made the move)
         flipTurn();
-
-        hashHistory[boardHash]--;
-        if (hashHistory[boardHash] == 0) {
-            hashHistory.erase(boardHash);
-        }
 
         UndoInfo info = prevMoves.back();
         prevMoves.pop_back();
@@ -1150,28 +1143,52 @@ public:
         return min(gamePhase, 24);
     }
 
-    // Call once at the start of each search (before iterative deepening) to record
-    // how many times every position on the board so far has occurred for real.
+    // Call once at the start of each search (before iterative deepening). Records
+    // the ply depth of the search root so isPositionRepeated() can tell a cycle
+    // the search itself built (match at ply index > rootPly) from one that
+    // reaches back to real play.
     void snapshotRootHistory() {
-        rootHashHistory = hashHistory;
+        rootPly = (int)prevMoves.size();
     }
 
-    bool isPositionRepeated() {
-        auto it = hashHistory.find(boardHash);
-        int total = (it != hashHistory.end()) ? it->second : 0;
-        if (total > 2) return true;  // true 3-fold — always safe, regardless of history
+    // Draw by repetition. Scans the position-hash history carried in the move
+    // stack: prevMoves[k].boardHash is the key of the position before move k, and
+    // the current boardHash is the position after the last move.
+    //
+    //   - Only positions within the last halfMoveClock plies can match — a pawn
+    //     move or capture in between permanently changes the Zobrist key — so the
+    //     scan is bounded and steps by 2 (a repeat has the same side to move).
+    //   - A position reached by a null move is not an occurrence of anything (the
+    //     side to move just passed); such entries are skipped, not treated as a
+    //     barrier.
+    //   - 3+ occurrences of the current position -> draw.
+    //   - Exactly 2 occurrences -> draw only when both lie inside this search
+    //     (every match at ply index > rootPly). If the earlier one is the root or
+    //     older, the position occurred in real play and may hide an un-searched
+    //     winning deviation, so a literal 3-fold is required. (Same rule as
+    //     Stockfish's Position::is_draw.)
+    bool isPositionRepeated() const {
+        const int n = (int)prevMoves.size();
+        // The current position is an occurrence unless a null move reached it
+        // (the start position, n == 0, always counts).
+        const bool currentRecorded = (n == 0) || (prevMoves[n - 1].move != MOVE_NONE);
+        int total   = currentRecorded ? 1 : 0;
+        int preRoot = 0;
 
-        if (total == 2) {
-            // A 2-fold is only safe to call a draw immediately if BOTH occurrences
-            // happened inside this search (i.e. this exact cycle was constructed by
-            // moves the search itself is considering). If one occurrence predates the
-            // search root, the position was played for real, not searched — there may
-            // be a winning deviation nobody has looked for, so require a true 3-fold instead.
-            auto rootIt = rootHashHistory.find(boardHash);
-            int preRoot = (rootIt != rootHashHistory.end()) ? rootIt->second : 0;
-            if (preRoot == 0) return true;
+        const int stop = std::max(0, n - halfMoveClock);
+        for (int k = n - 2; k >= stop; k -= 2) {
+            if (k != 0 && prevMoves[k - 1].move == MOVE_NONE) continue;  // reached via null move
+            if (prevMoves[k].boardHash == boardHash) {
+                total++;
+                if (k <= rootPly) {
+                    preRoot++;
+                }
+                if (total > 2) { // true 3-fold
+                    return true;
+                }  
+            }
         }
-        return false;
+        return total == 2 && preRoot == 0;  // 2-fold: draw only if wholly in-search
     }
 
     bool isFiftyMoveDraw() const {
@@ -1607,8 +1624,7 @@ private:
     BucketCacheEntry bucketCache[2][64]{};
 
     uint64_t boardHash = 0;
-    std::unordered_map<uint64_t, int> hashHistory;
-    std::unordered_map<uint64_t, int> rootHashHistory;
+    int rootPly = 0;
     Hash hashHelper;
     uint64_t castlingHashKeys[4]{};
 
@@ -1626,6 +1642,10 @@ private:
     uint64_t blackPassPawnMask[8][8]{};
 
     void setup() {
+        prevMoves.clear();
+        prevMoves.reserve(1024);  // game history + deepest search line, allocation-free
+        rootPly = 0;
+
         // Row 1: all 8 white pawns (bits 8-15)
         whitePawns   = 0x000000000000FF00ULL;
 
@@ -1699,8 +1719,6 @@ private:
         boardHash ^= hashHelper.whiteLongCastle;
         boardHash ^= hashHelper.blackShortCastle;
         boardHash ^= hashHelper.blackLongCastle;
-
-        hashHistory[boardHash]++;
     }
 
     void initPieceValues() {
