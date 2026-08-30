@@ -787,25 +787,36 @@ public:
             while (base >= 0 && !las.accStack[base].correct[side]) base--;
             // base == -1 would mean no valid entry exists — should never happen after setup
 
-            memcpy(las.accStack[ply].acc[side], las.accStack[base].acc[side],
-                   NNUE_HIDDEN * sizeof(int16_t));
+            int16_t*       dst = las.accStack[ply].acc[side];
+            const int16_t* src = las.accStack[base].acc[side];
 
-            // Apply all accumulated fused deltas from base+1 → ply.
-            // Each FusedDelta is one combined accumulator pass:
-            //   sub2==-1 → QUIET/PROMO: acc += w[add1] - w[sub1]
-            //   sub2!=-1 → CAPTURE/EP:  acc += w[add1] - w[sub1] - w[sub2]
+            // Apply the fused deltas stored for plies base+1 → ply. Each is one
+            // accumulator pass:
+            //   sub2==-1 → QUIET/PROMO: += w[add1] - w[sub1]
+            //   sub2!=-1 → CAPTURE/EP:  += w[add1] - w[sub1] - w[sub2]
+            // The first pass reads dst's starting values from `src` (the last
+            // valid ply); the rest run in place on `dst`. A span with no delta
+            // for this side leaves `seeded` false and falls through to a copy.
+            bool seeded = false;
             for (int p = base + 1; p <= ply; p++) {
                 const auto& pd    = las.plyDeltas[p];
                 const auto* deltas = (side == 0) ? pd.w : pd.b;
                 const int   count  = (side == 0) ? pd.wCount : pd.bCount;
-                int16_t* acc = las.accStack[ply].acc[side];
                 for (int i = 0; i < count; i++) {
                     const auto& d = deltas[i];
-                    if (d.sub2 == -1)
-                        accFusedQuiet  (acc, d.sub1, d.add1);
-                    else
-                        accFusedCapture(acc, d.sub1, d.sub2, d.add1);
+                    if (!seeded) {
+                        if (d.sub2 == -1) accFusedQuietFrom  (dst, src, d.sub1, d.add1);
+                        else              accFusedCaptureFrom(dst, src, d.sub1, d.sub2, d.add1);
+                        seeded = true;
+                    } else {
+                        if (d.sub2 == -1) accFusedQuiet  (dst, d.sub1, d.add1);
+                        else              accFusedCapture(dst, d.sub1, d.sub2, d.add1);
+                    }
                 }
+            }
+            if (!seeded) {
+                // no piece moved for this side between base and ply — acc unchanged
+                memcpy(dst, src, NNUE_HIDDEN * sizeof(int16_t));
             }
             las.accStack[ply].correct[side] = true;
         }

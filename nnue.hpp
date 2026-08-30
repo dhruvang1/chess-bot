@@ -178,6 +178,27 @@ inline void accFusedCapture(int16_t* acc, int sub1, int sub2, int add1) {
         acc[i] += static_cast<int16_t>(rowAdd[i] - rowSub1[i] - rowSub2[i]);
 }
 
+// Seeded fused update: dst = src + w[add1] - w[sub1]  (capture form takes a second
+// sub). One pass over the whole accumulator, reading the previous state from src,
+// so the lazy stack applies its first delta straight off the last valid ply
+// without a separate copy. Weight delta is truncated to int16 before the add.
+inline void accFusedQuietFrom(int16_t* __restrict__ dst, const int16_t* __restrict__ src,
+                              int sub1, int add1) {
+    const int16_t* rowSub = nnueWeights.l0w[sub1];
+    const int16_t* rowAdd = nnueWeights.l0w[add1];
+    for (int i = 0; i < NNUE_HIDDEN; i++)
+        dst[i] = static_cast<int16_t>(src[i] + static_cast<int16_t>(rowAdd[i] - rowSub[i]));
+}
+
+inline void accFusedCaptureFrom(int16_t* __restrict__ dst, const int16_t* __restrict__ src,
+                                int sub1, int sub2, int add1) {
+    const int16_t* rowSub1 = nnueWeights.l0w[sub1];
+    const int16_t* rowSub2 = nnueWeights.l0w[sub2];
+    const int16_t* rowAdd  = nnueWeights.l0w[add1];
+    for (int i = 0; i < NNUE_HIDDEN; i++)
+        dst[i] = static_cast<int16_t>(src[i] + static_cast<int16_t>(rowAdd[i] - rowSub1[i] - rowSub2[i]));
+}
+
 // Runs the output layer. bucket = (popcount(occupied) - 2) / 4.
 #ifdef __ARM_NEON
 // Lizard SCReLU: reorder (v*v)*w → (v*w)*v so the first multiply stays in
