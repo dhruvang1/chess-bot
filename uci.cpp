@@ -82,7 +82,7 @@ class Uci {
             cout << "id name simple-bot" << endl;
             cout << "id author Dhruvang" << endl;
             cout << "option name MaxDepth type spin default 64 min 1 max 64" << endl;
-            cout << "option name Hash type spin default 320 min 1 max 65536" << endl;
+            cout << "option name Hash type spin default " << DEFAULT_HASH_MB << " min 1 max 65536" << endl;
             cout << "option name Threads type spin default 1 min 1 max 128" << endl;
             cout << "option name NNUEPath type string default <empty>" << endl;
             cout << "uciok" << endl;

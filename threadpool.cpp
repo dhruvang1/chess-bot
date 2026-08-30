@@ -15,6 +15,7 @@ class SearchThreadPool {
     vector<unique_ptr<Search>> workers;
 
     string runOnAllThreads(BoardType& root, const std::function<string(Search&, BoardType&)>& runOne) {
+        Search::ensureTTAllocated();  // install the default-size TT if no `setoption Hash` did
         int n = (int)workers.size();
         for (int i = 0; i < n; i++) {
             *boards[i] = root;

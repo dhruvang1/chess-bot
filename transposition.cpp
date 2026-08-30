@@ -9,10 +9,16 @@ static const int TTFlagAlpha = 0;  // we couldn't reach the alpha of the positio
 static const int TTFlagExact = 1;  // we received the definite evaluation
 static const int TTFlagBeta = 2;  // the move caused a beta cutoff
 
-// Bucket count (each bucket holds 2 TTEntry slots). Resized at runtime via the
-// Hash UCI option. int64_t so multi-GB tables don't overflow the entry math.
-static int64_t TTKeySize = 19999999; // default ~305 MB; resized at runtime via Hash UCI option
-static int64_t TTSize    = 2 * TTKeySize;
+// Default Hash size in MB — advertised in the UCI `option` line and installed on
+// the first search if no `setoption name Hash` arrived first.
+static constexpr int DEFAULT_HASH_MB = 320;
+
+// Bucket count (each bucket holds 2 TTEntry slots) and total slot count. int64_t
+// so multi-GB tables don't overflow the entry math. Both 0 until the first
+// resizeTT() — allocation is deferred so setting Hash doesn't build the default
+// table only to discard it (see Search::ensureTTAllocated).
+static int64_t TTKeySize = 0;
+static int64_t TTSize    = 0;
 
 // Generation counter: 5 bits (0-31), stored in bits 6..2 of TTEntry::flag.
 static uint8_t ttAge = 0;

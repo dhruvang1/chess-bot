@@ -471,22 +471,25 @@ class Search {
 
     // Resize and clear the shared TT to fit the requested number of megabytes.
     // Safe to call at any time; automatically adjusts TTKeySize/TTSize globals.
+    // No-op when the table is already the requested size (so a GUI re-sending the
+    // current Hash value doesn't needlessly reallocate and wipe it).
     static void resizeTT(int mb) {
         int64_t totalEntries = ((int64_t)mb * 1024 * 1024) / (int64_t)sizeof(TTEntry);
-        TTKeySize = totalEntries / 2;  // two slots per bucket
+        int64_t newKeySize = totalEntries / 2;  // two slots per bucket
+        if (newKeySize == TTKeySize && !ttable.empty()) return;
+        TTKeySize = newKeySize;
         TTSize    = TTKeySize * 2;
         // Assign from a new vector to force deallocation of the old allocation.
         // assign() only shrinks size, not capacity — the old memory would stay reserved.
         ttable = vector<TTEntry>(TTSize, TTEntry{});
     }
 
-    // Idempotent: only (re)allocates if the size is wrong. Safe to call from every
-    // worker's constructor (e.g. when SearchThreadPool grows the pool mid-game)
-    // without wiping TT contents other threads may already be relying on.
+    // Allocation is deferred until the first search so that a `setoption name Hash`
+    // (which GUIs always send before searching) doesn't first build the default
+    // table and then immediately throw it away. Called once per `go`; cheap after
+    // the first. If Hash was never set, this installs the default-size table.
     static void ensureTTAllocated() {
-        if ((int64_t)ttable.size() != TTSize) {
-            ttable = vector<TTEntry>(TTSize, TTEntry{});
-        }
+        if (ttable.empty()) resizeTT(DEFAULT_HASH_MB);
     }
 
     // Unconditionally wipes the shared TT. Only call for an explicit new-game reset,
@@ -498,7 +501,7 @@ class Search {
 
     Search(int threadId = 0) : threadId(threadId) {
         if (isManual()) ofile.open("log-" + to_string(threadId) + ".txt");
-        ensureTTAllocated();
+        // TT allocation is deferred to the first search (see ensureTTAllocated).
     }
 
     void setBoard(BoardType& b) {
