@@ -91,6 +91,21 @@ Set the `manual` environment variable to `1` for debug mode (prints board and ha
 manual=1 ./build/chess_magic
 ```
 
+## Benchmark
+
+`bench` runs a fixed 41-position suite to a fixed depth on one thread with a
+freshly-zeroed TT, and prints a deterministic `<nodes> nodes <nps> nps` line. The
+node count is identical on every run/machine (a build fingerprint); NPS is the
+metric to compare between builds.
+
+```bash
+./build/chess_magic --nnue nnue/quantised.bin bench      # default depth 10
+./build/chess_magic --nnue nnue/quantised.bin bench 13   # deeper, less noisy NPS
+```
+
+For an A/B NPS comparison, build both revisions and interleave runs
+(`A B A B …`, not `A A A B B B`), then take the median.
+
 ## Engine vs Engine
 
 Compatible GUIs: [BanksiaGUI](https://banksiagui.com/), [cutechess](https://github.com/cutechess/cutechess), or via CLI:
