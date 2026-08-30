@@ -44,7 +44,7 @@ class Search {
     // Set by SearchThreadPool before searching; 0 = main thread (authoritative for
     // reported bestmove/PV/info output), >0 = Lazy SMP helper threads.
     int threadId = 0;
-    uint16_t killers[128] = {};
+    uint16_t killers[2 * MAX_PLY] = {};  // 2 killer slots per ply; indexed killers[2*ply(+1)]
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
     // since the truly bad moves end up at high indices where they get aggressively reduced.
@@ -128,8 +128,8 @@ class Search {
     bool shouldStop = false;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
-    int handicapTimeLeftMs = INT_MAX;
     long timeBankMs = 0;  // saved time from previous moves
+    static constexpr int MOVE_OVERHEAD_MS = 20;  // reserve for GUI/UCI round-trip latency
     int myIncMs = 0;      // increment for current time control, used for timeScale floor
     MoveList orderedMovesLastRound;
     uint16_t prevBestMove = MOVE_NONE;
@@ -213,7 +213,7 @@ class Search {
     void computeTimeLimits(int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         const int actualTimeLeft = (board->turn == BoardType::WHITE) ? whiteTimeMs : blackTimeMs;
         int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
-        int myTimeLeft = min(actualTimeLeft, handicapTimeLeftMs);
+        int myTimeLeft = max(1, actualTimeLeft - MOVE_OVERHEAD_MS);
 
         // phase-aware time allocation: spend less in opening, more in middle game.
         // Divisors interpolate between no-increment (conservative, avoids flagging)
@@ -254,8 +254,8 @@ class Search {
             hardTimeLimitMs = min(3 * softTimeLimitMs, myTimeLeft - reserve);
         }
 
-        softTimeLimitMs = max(softTimeLimitMs, 5L);
-        hardTimeLimitMs = max(hardTimeLimitMs, 10L);
+        softTimeLimitMs = max(softTimeLimitMs, 1L);
+        hardTimeLimitMs = max(hardTimeLimitMs, 1L);
     }
 
     // Emitted once per completed iterative-deepening iteration, so node growth can be
@@ -515,7 +515,9 @@ class Search {
 
     string getBestMove(BoardType& currentBoard, int maxDepth) {
         initSearch(currentBoard);
-        return runSearch(maxDepth);
+        string bestMove = runSearch(maxDepth);
+        board->endSearchAccumulator();
+        return bestMove;
     }
 
     string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
@@ -523,12 +525,10 @@ class Search {
         computeTimeLimits(whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
 
         string bestMove = runSearch(maxSearchDepth);
+        board->endSearchAccumulator();
 
         auto stopTime = chrono::high_resolution_clock::now();
         auto duration = chrono::duration_cast<chrono::milliseconds>(stopTime - startTime);
-        int myInc = (board->turn == BoardType::WHITE) ? whiteIncMs : blackIncMs;
-        handicapTimeLeftMs = handicapTimeLeftMs - (int)duration.count() + myInc;
-        if (handicapTimeLeftMs < 0) handicapTimeLeftMs = 0;
 
         // bank unused soft-limit time for harder positions later
         long saved = softTimeLimitMs - (long)duration.count();
@@ -1020,6 +1020,11 @@ class Search {
 
 
     int quiescenceSearch(int alpha, int beta, int depth, int ply) {
+        // Hard ply ceiling. Bail to a static eval.
+        if (ply >= MAX_PLY - 1)  {
+            return board->getBoardEval();
+        }
+        
         pvLength[ply] = 0;
         if (alpha + 1 < beta && selDepth < ply + 1) selDepth = ply + 1;
 

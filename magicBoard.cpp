@@ -30,7 +30,9 @@ static_assert(NNUE_HIDDEN == 1280, "update BucketCacheEntry::acc size to match N
 // getBoardEval() applies them on demand. undoMove() is completely free of
 // NNUE work. MagicBoard remains copyable via explicit copy semantics.
 struct LazyAccStack {
-    static constexpr int MAX_PLY = 512;
+    // Indexed purely by search depth (MagicBoard::accIndex): 0 at the search root,
+    // ++ per move made in search, -- on unmake
+    static constexpr int MAX_PLY = 128;
 
     struct AccEntry {
         alignas(64) int16_t acc[2][NNUE_HIDDEN]; // [0]=white, [1]=black
@@ -169,6 +171,8 @@ public:
         prevMoves.clear();
         prevMoves.reserve(1024);  // game history + deepest search line, allocation-free
         rootPly = 0;
+        accActive = false;   // game-history replay must not drive the accumulator stack
+        accIndex = 0;
         boardHash = 0;
         mgEval = 0;
         egEval = 0;
@@ -273,8 +277,8 @@ public:
 
         // Set up the pending ply slot: clear its delta list and mark both sides dirty.
         // addPieceEval/removePieceEval/movePieceEval will append to this slot.
-        // undoMove just decrements prevMoves — no NNUE reversal needed.
-        pendingPly = static_cast<int>(prevMoves.size()) + 1;
+        // undoMove decrements accIndex.
+        pendingPly = nextAccSlot();
         las.plyDeltas[pendingPly] = {};
         las.accStack[pendingPly].correct[0] = las.accStack[pendingPly].correct[1] = false;
 
@@ -464,8 +468,9 @@ public:
         const int from = ::fromSq(info.move);
         const int to = ::toSq(info.move);
 
-        // Lazy acc stack: undo is free — just pop prevMoves and the parent ply's
-        // accStack entry (which was never mutated by this move) is still valid.
+        // Lazy acc stack: undo is free — step accIndex back to the parent ply,
+        // whose accStack entry was never mutated by this move and is still valid.
+        if (accActive && accIndex > 0) --accIndex;
 
         if (isPromoMove(info.move)) {
             // Promotion: remove promoted piece, restore pawn
@@ -534,7 +539,7 @@ public:
     void processNullMove() {
         evalCalculated = false;
         // Null move makes no piece changes: zero deltas, both sides inherit parent acc lazily.
-        pendingPly = static_cast<int>(prevMoves.size()) + 1;
+        pendingPly = nextAccSlot();
         las.plyDeltas[pendingPly] = {};
         las.accStack[pendingPly].correct[0] = las.accStack[pendingPly].correct[1] = false;
         UndoInfo info {MOVE_NONE, enPassantCol, castlingRights, boardHash, ' ', -1, mgEval, egEval, gamePhase, halfMoveClock};
@@ -549,6 +554,7 @@ public:
         evalCalculated = false;
         const UndoInfo info = std::move(prevMoves.back());
         prevMoves.pop_back();
+        if (accActive && accIndex > 0) --accIndex;
         enPassantCol = info.enPassantCol;
         boardHash = info.boardHash;
         mgEval = info.mgEval;
@@ -777,9 +783,15 @@ public:
             throw std::runtime_error("NNUE not loaded — set NNUEPath via setoption before searching");
         }
 
-        // Lazy accumulator: for each perspective, walk back to the last valid ply,
-        // then apply all stored deltas forward into the current ply's acc entry.
-        const int ply = static_cast<int>(prevMoves.size());
+        // The accumulator stack is a search stack indexed by accIndex. Outside a
+        // search (accActive == false — the `eval`/`print` debug commands, datagen
+        // between moves) there is no valid chain, so rebuild slot 0 for the current
+        // position and read it directly.
+        int ply = accIndex;
+        if (!accActive) {
+            rebuildBothAccs();   // slot 0 := current position
+            ply = 0;
+        }
         for (int side = 0; side < 2; side++) {
             if (las.accStack[ply].correct[side]) continue;
 
@@ -1160,6 +1172,21 @@ public:
     // reaches back to real play.
     void snapshotRootHistory() {
         rootPly = (int)prevMoves.size();
+        // Open the accumulator search stack at the root: slot 0 is a fresh rebuild
+        // of the current position, accIndex 0, and from here make/unmake move it
+        // ±1. The stack spans this search, not the full game
+        accIndex  = 0;
+        accActive = true;
+        if (nnueLoaded && whiteKing && blackKing) {
+            rebuildBothAccs();
+        }
+    }
+
+    // Call when a search finishes: the accumulator stack is no longer valid to
+    // walk (the board is about to be mutated by real game moves).
+    void endSearchAccumulator() {
+        accActive = false;
+        accIndex  = 0;
     }
 
     // Draw by repetition. Scans the position-hash history carried in the move
@@ -1538,6 +1565,19 @@ private:
 
     LazyAccStack las;   // lazy accumulator stack (heap-allocated, copyable)
     int pendingPly = 0; // ply slot being built during processMove
+
+    // The lazy accumulator stack is a *search* stack, not game history: accIndex is
+    // 0 at the search root and moves ±1 with each search make/unmake. accActive is
+    // the "is the net observing" flag — false while the UCI `position` command
+    // replays game history (those moves must not touch the stack) and outside any
+    // search; true between snapshotRootHistory() and the end of the search.
+    int  accIndex  = 0;
+    bool accActive = false;
+
+    // Slot for the position produced by the move currently being applied.
+    inline int nextAccSlot() {
+        return accActive ? ++accIndex : 0;
+    }
 
     inline void resetAccBias() {
         memcpy(las.accStack[0].acc[0], nnueWeights.l0b, NNUE_HIDDEN * sizeof(int16_t));
