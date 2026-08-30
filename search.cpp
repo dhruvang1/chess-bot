@@ -736,6 +736,7 @@ class Search {
             moveStack[ply] = MOVE_NONE;
             pieceStack[ply] = ' ';
             board->processNullMove();
+            prefetchTT(board->getHash());
             int R = min(4 + depth / 3, depth);
             int nullEval = -negamax(-beta, -beta + 1, depth - R, ply + 1, false, !cutNode);
             board->undoNullMove();
@@ -766,6 +767,7 @@ class Search {
                 pieceStack[ply] = m.movePiece;
                 nodes++;
                 board->processMove(m.move);
+                prefetchTT(board->getHash());
                 int pcEval = -negamax(-pcBeta, -pcBeta + 1, depth - 4, ply + 1, false, true);
                 board->undoMove();
                 if (pcEval >= pcBeta) {
@@ -872,6 +874,7 @@ class Search {
             pieceStack[ply] = m.movePiece;
             nodes++;
             board->processMove(m.move);
+            prefetchTT(board->getHash());
             int ext = (m.move == ttMove) ? singularExtension : 0;
             int eval;
             if (moveIdx == 0) {
@@ -1101,6 +1104,7 @@ class Search {
             qMovesSearched++;
             qNodes++;
             board->processMove(m.move);
+            prefetchTT(board->getHash());
             int eval = -quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
             board->undoMove();
 
@@ -1158,6 +1162,12 @@ class Search {
             secondEntry->update(board->getHash(), bestMove, ttEval, depth, flag);
         }
         cacheSaveSuccess++;
+    }
+
+    // Prefetch the TT bucket for a hash into cache. Call right after processMove()
+    // so the line is resident by the time the child node probes it.
+    static inline void prefetchTT(uint64_t hash) {
+        __builtin_prefetch(&ttable[(hash % TTKeySize) * 2]);
     }
 
     TTEntry* getTTEntry(uint64_t hash) {
