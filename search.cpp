@@ -48,15 +48,16 @@ class Search {
     // History heuristic: history[pieceChar][toSquare] tracks how often a quiet move causes beta cutoffs.
     // Quiet moves that frequently cause cutoffs get ordered earlier, making LMR more effective
     // since the truly bad moves end up at high indices where they get aggressively reduced.
-    // Indexed by ASCII char value (e.g. 'N'=78, 'p'=112) so 128 covers all pieces.
-    int history[128][64] = {};
-    uint16_t countermoves[128][64] = {};
+    // Indexed by pieceIdx() 0-11 (P/N/B/R/Q/K white, p/n/b/r/q/k black) × to-square.
+    // int16_t: gravity in updateHist() keeps every entry in [-MAX_HISTORY, MAX_HISTORY].
+    int16_t history[12][64] = {};
+    uint16_t countermoves[12][64] = {};
 
     // Continuation history: contHist[prevPieceIdx][prevToSq][curPieceIdx][curToSq]
     // 1-ply: opponent's last move as context. 2-ply: our own last move as context.
-    // Uses compact piece indices 0-11 to keep each table at ~2.3MB.
-    int contHist[12][64][12][64] = {};
-    int contHist2[12][64][12][64] = {};
+    // Uses compact piece indices 0-11; int16_t entries keep each table at ~1.1MB.
+    int16_t contHist[12][64][12][64] = {};
+    int16_t contHist2[12][64][12][64] = {};
 
     // Per-ply move stack: stores the move and piece made at each ply so any depth of
     // continuation history can be looked up without threading params through the call stack.
@@ -65,13 +66,16 @@ class Search {
 
     // Capture history: captHist[movingPieceIdx][toSq][capturedPieceType]
     // Separates capture ordering from quiet ordering. capturedPieceType = pieceIdx(cap)/2
-    // so color is ignored (white queen captured == black queen captured). ~18KB.
-    int captHist[12][64][6] = {};
+    // so color is ignored (white queen captured == black queen captured). ~9KB.
+    int16_t captHist[12][64][6] = {};
 
-    // Cap history entries to [-MAX_HISTORY, MAX_HISTORY] via gravity.
+    // Cap history entries to [-MAX_HISTORY, MAX_HISTORY] via gravity. With |bonus|
+    // also capped at MAX_HISTORY (see the cutoff handler), the fixed point of this
+    // recurrence stays within ±MAX_HISTORY, so int16_t storage is exact.
     static constexpr int MAX_HISTORY = 16384;
-    static inline void updateHist(int& entry, int bonus) {
-        entry += bonus - entry * std::abs(bonus) / MAX_HISTORY;
+    static inline void updateHist(int16_t& entry, int bonus) {
+        int v = entry + bonus - entry * std::abs(bonus) / MAX_HISTORY;
+        entry = static_cast<int16_t>(v);
     }
 
     static constexpr int CORR_HIST_SIZE    = 16384;
@@ -679,7 +683,7 @@ class Search {
 
         uint16_t counterMove = MOVE_NONE;
         if (prevMove != MOVE_NONE) {
-            counterMove = countermoves[(int)prevPiece][toSq(prevMove)];
+            counterMove = countermoves[pieceIdx(prevPiece)][toSq(prevMove)];
         }
 
         MoveList legalMoves;
@@ -885,7 +889,7 @@ class Search {
                     // Improving: position is trending up, eval is reliable — search deeper.
                     if (improving) R--;
                     R += cutNode;  // at cut nodes, non-first moves are very unlikely to be best
-                    int hist = history[(int)m.movePiece][toSq(m.move)];
+                    int hist = history[pieceIdx(m.movePiece)][toSq(m.move)];
                     // Clamp the history contribution to [-2, +2] so a single piece-square
                     // combination with extreme negative history can't inflate R beyond reason.
                     R -= max(hist / 300, -2);
@@ -934,7 +938,7 @@ class Search {
 
             if (beta <= alpha) {
                 ttflag = TTFlagBeta;
-                int bonus = depth * depth;
+                int bonus = std::min(depth * depth, MAX_HISTORY);
                 if (isQuiet) {
                     if (killers[2*ply] != m.move) {
                         killers[2*ply + 1] = killers[2*ply];
@@ -942,11 +946,11 @@ class Search {
                     }
                     int ci = pieceIdx(m.movePiece);
                     int csq = toSq(m.move);
-                    updateHist(history[(int)m.movePiece][csq], bonus);
+                    updateHist(history[ci][csq], bonus);
                     // Penalise every quiet move that was searched before this cutoff move.
                     // They failed to produce a cutoff, so they deserve a lower ordering score.
                     for (int q = 0; q < numTriedQuiets - 1; q++) {
-                        updateHist(history[(int)triedQuietPieces[q]][toSq(triedQuiets[q])], -bonus);
+                        updateHist(history[pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])], -bonus);
                     }
                     // Update continuation history (1-ply and 2-ply) with the same bonus/malus.
                     if (prevMove != MOVE_NONE) {
@@ -956,7 +960,7 @@ class Search {
                         for (int q = 0; q < numTriedQuiets - 1; q++) {
                             updateHist(contHist[pi][psq][pieceIdx(triedQuietPieces[q])][toSq(triedQuiets[q])], -bonus);
                         }
-                        countermoves[(int)prevPiece][psq] = m.move;
+                        countermoves[pi][psq] = m.move;
                     }
                     if (prev2Move != MOVE_NONE) {
                         int p2i  = pieceIdx(prev2Piece);
@@ -1282,7 +1286,7 @@ class Search {
                 // Blend main history with 1-ply continuation history.
                 // Both tables use the same update magnitude (depth²) and aging (>>= 1),
                 // so they're on the same scale and can be summed directly.
-                m.score = history[(int)m.movePiece][sq]
+                m.score = history[ci][sq]
                         + (hasContHist  ? contHist [pi ][prevSq ][ci][sq] : 0)
                         + (hasCont2Hist ? contHist2[p2i][prev2Sq][ci][sq] : 0);
             }
