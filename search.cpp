@@ -472,7 +472,7 @@ class Search {
     // Resize and clear the shared TT to fit the requested number of megabytes.
     // Safe to call at any time; automatically adjusts TTKeySize/TTSize globals.
     static void resizeTT(int mb) {
-        int totalEntries = (mb * 1024 * 1024) / (int)sizeof(TTEntry);
+        int64_t totalEntries = ((int64_t)mb * 1024 * 1024) / (int64_t)sizeof(TTEntry);
         TTKeySize = totalEntries / 2;  // two slots per bucket
         TTSize    = TTKeySize * 2;
         // Assign from a new vector to force deallocation of the old allocation.
@@ -484,7 +484,7 @@ class Search {
     // worker's constructor (e.g. when SearchThreadPool grows the pool mid-game)
     // without wiping TT contents other threads may already be relying on.
     static void ensureTTAllocated() {
-        if ((int)ttable.size() != TTSize) {
+        if ((int64_t)ttable.size() != TTSize) {
             ttable = vector<TTEntry>(TTSize, TTEntry{});
         }
     }
@@ -666,7 +666,7 @@ class Search {
             && depth >= 8
             && ttEntry != nullptr
             && ttEntry->depth >= depth - 3
-            && ttEntry->flag != TTFlagAlpha
+            && ttEntry->boundType() != TTFlagAlpha
             && abs(ttEval) < BoardType::mateThreshold) {
             int sBeta = ttEval - 2 * depth;
             int sScore = negamax(sBeta - 1, sBeta, (depth - 1) / 2, ply, false, true, ttMove);
@@ -1139,23 +1139,31 @@ class Search {
         return eval;
     }
 
+    // Base index of the 2-slot bucket for a hash. 64-bit multiplicative hashing
+    // (umulh) instead of a 64-bit modulo: cheaper, and it mixes the whole hash
+    // into the high bits so the low 16 bits stay free to use as the stored key.
+    static inline size_t ttBucket(uint64_t hash) {
+        uint64_t b = (uint64_t)(((__uint128_t)hash * (__uint128_t)(uint64_t)TTKeySize) >> 64);
+        return (size_t)(b * 2);
+    }
+
     void saveInTT(uint16_t bestMove, int eval, int depth, int flag, int ply) {
         cacheSave++;
         int ttEval = mateScoreToTT(eval, ply);
-        int index = (board->getHash() % TTKeySize) * 2;
+        size_t index = ttBucket(board->getHash());
 
         auto entry = &ttable[index];
         auto secondEntry = &ttable[index + 1];
 
         // Age penalty: each generation of staleness reduces the entry's effective depth by 1.
-        // Uses & 63 (bitmask) instead of % 64 since 64 is a power of two.
-        int ageDiff = (ttAge - entry->entryAge()) & 63;
+        // Uses & 0x1F (bitmask) since the age field is 5 bits.
+        int ageDiff = (ttAge - entry->entryAge()) & 0x1F;
         int effectiveDepth = (int)entry->depth - ageDiff;
 
         if (depth >= effectiveDepth) {
             // New entry wins: push old primary to secondary (still useful for move ordering),
             // then write new entry to primary.
-            if (entry->hash != 0) secondEntry->update(entry);
+            if (entry->occupied()) secondEntry->update(entry);
             entry->update(board->getHash(), bestMove, ttEval, depth, flag);
         } else {
             // Old primary is still valuable (deep and not too stale): new entry goes to secondary.
@@ -1167,14 +1175,15 @@ class Search {
     // Prefetch the TT bucket for a hash into cache. Call right after processMove()
     // so the line is resident by the time the child node probes it.
     static inline void prefetchTT(uint64_t hash) {
-        __builtin_prefetch(&ttable[(hash % TTKeySize) * 2]);
+        __builtin_prefetch(&ttable[ttBucket(hash)]);
     }
 
     TTEntry* getTTEntry(uint64_t hash) {
-        int index = (hash % TTKeySize) * 2;
-        if (ttable[index].hash == hash) {
+        size_t index = ttBucket(hash);
+        uint16_t key = (uint16_t)hash;
+        if (ttable[index].occupied() && ttable[index].key16 == key) {
             return &ttable[index];
-        } else if (ttable[index + 1].hash == hash) {
+        } else if (ttable[index + 1].occupied() && ttable[index + 1].key16 == key) {
             return &ttable[index + 1];
         }
 
