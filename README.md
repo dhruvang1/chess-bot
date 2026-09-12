@@ -85,6 +85,11 @@ position startpos moves e2e4 e7e5
 go wtime 60000 btime 60000
 ```
 
+Supported `go` limits: `go wtime <ms> btime <ms> [winc <ms>] [binc <ms>]` (time control),
+`go depth <n>` (fixed depth), and `go nodes <n>` (fixed node budget — searches to the
+default max depth but stops once ~`<n>` nodes have been visited; the count overshoots
+slightly because the in-progress iterative-deepening iteration is always finished).
+
 Set the `manual` environment variable to `1` for debug mode (prints board and hash after each command):
 
 ```bash

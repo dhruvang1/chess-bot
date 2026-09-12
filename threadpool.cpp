@@ -89,4 +89,14 @@ public:
             return w.getBestMove(b, whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
         });
     }
+
+    // `go nodes <n>`: split the budget evenly across Lazy SMP threads so the
+    // combined node count reported at the end lands near the requested total.
+    // Exact for the common Threads=1 case.
+    string searchNodes(BoardType& root, long nodeLimit) {
+        long perThread = max(1L, nodeLimit / (long)workers.size());
+        return runOnAllThreads(root, [perThread](Search& w, BoardType& b) {
+            return w.getBestMoveNodeLimited(b, perThread);
+        });
+    }
 };

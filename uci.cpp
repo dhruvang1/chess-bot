@@ -187,6 +187,8 @@ class Uci {
             string bestMove;
             if (tokens.size() > ti + 1 && tokens[ti] == "depth") {
                 bestMove = pool.search(board, stoi(tokens[ti + 1]));
+            } else if (tokens.size() > ti + 1 && tokens[ti] == "nodes") {
+                bestMove = pool.searchNodes(board, stoll(tokens[ti + 1]));
             } else if (!isSelfplay) {
                 int whiteTime = 60 * 1000;
                 int blackTime = 60 * 1000;

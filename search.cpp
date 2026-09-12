@@ -34,6 +34,12 @@ static void initLMR() {
     lmrInitialized = true;
 }
 
+static int roundDownToPow2(long v) {
+    long p = 1;
+    while (p * 2 <= v) p *= 2;
+    return (int)p;
+}
+
 class Search {
     static constexpr int POSITIVE_NUM = 1 << 30;
     static constexpr int NEGATIVE_NUM = -POSITIVE_NUM;
@@ -128,6 +134,9 @@ class Search {
     bool shouldStop = false;
     long softTimeLimitMs{};
     long hardTimeLimitMs{};
+    long maxNodes = 0;   // hard node budget for this search (0 = unlimited)
+    int nodeCheckInterval = 4096; // How often (in nodes) the negamax/qsearch loops poll shouldQuit()
+
     long timeBankMs = 0;  // saved time from previous moves
     static constexpr int MOVE_OVERHEAD_MS = 20;  // reserve for GUI/UCI round-trip latency
     int myIncMs = 0;      // increment for current time control, used for timeScale floor
@@ -157,6 +166,10 @@ class Search {
 
     inline bool shouldQuit() {
         if (shouldStop || globalStop.load(memory_order_relaxed)) {
+            shouldStop = true;
+            return true;
+        }
+        if (maxNodes > 0 && (long)nodes + qNodes >= maxNodes) {
             shouldStop = true;
             return true;
         }
@@ -207,6 +220,8 @@ class Search {
         startTime = high_resolution_clock::now();
         softTimeLimitMs = LONG_MAX;
         hardTimeLimitMs = LONG_MAX;
+        maxNodes = 0;
+        nodeCheckInterval = 4096;
         shouldStop = false;
     }
 
@@ -332,6 +347,10 @@ class Search {
             auto currentTime = high_resolution_clock::now();
             auto elapsedTime = duration_cast<milliseconds>(currentTime - startTime).count();
             if (depth > START_DEPTH && softTimeLimitMs != LONG_MAX && elapsedTime >= (long)(softTimeLimitMs * timeScale)) {
+                break;
+            }
+            // don't start a new iteration once the node budget is spent (depth 1 always runs).
+            if (depth > START_DEPTH && maxNodes > 0 && (long)nodes + qNodes >= maxNodes) {
                 break;
             }
 
@@ -520,6 +539,17 @@ class Search {
         return bestMove;
     }
 
+    // `go nodes <n>`: iterate to maxSearchDepth but stop once this thread has
+    // searched `nodeBudget` nodes (see shouldQuit()).
+    string getBestMoveNodeLimited(BoardType& currentBoard, long nodeBudget) {
+        initSearch(currentBoard);
+        maxNodes = max(1L, nodeBudget);
+        nodeCheckInterval = roundDownToPow2(max(1L, min(4096L, maxNodes / 10)));
+        string bestMove = runSearch(maxSearchDepth);
+        board->endSearchAccumulator();
+        return bestMove;
+    }
+
     string getBestMove(BoardType& currentBoard, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
         initSearch(currentBoard);
         computeTimeLimits(whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
@@ -617,7 +647,7 @@ class Search {
             return eval;
         }
 
-        if ((nodes & 4095) == 0 && shouldQuit()) {
+        if ((nodes & (nodeCheckInterval - 1)) == 0 && shouldQuit()) {
             return ply == 0 && depth == START_DEPTH ? board->getBoardEval() : 0;
         }
 
@@ -1028,7 +1058,7 @@ class Search {
         pvLength[ply] = 0;
         if (alpha + 1 < beta && selDepth < ply + 1) selDepth = ply + 1;
 
-        if (shouldStop || ((qNodes & 4095) == 0 && shouldQuit())) {
+        if (shouldStop || ((qNodes & (nodeCheckInterval - 1)) == 0 && shouldQuit())) {
             return 0;
         }
         
