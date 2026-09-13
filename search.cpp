@@ -79,6 +79,10 @@ class Search {
     // Static eval at each ply for the improving heuristic.
     // Initialised to NEGATIVE_NUM (sentinel = "not set / in check") at the start of each node.
     int evalStack[MAX_PLY] = {};
+    // cutoffCount[ply]: how many children of the node at `ply` have cut off so far.
+    // Reset for a node's children right before its move loop starts; read mid-loop to
+    // decide whether the subtree looks "easy" enough to trust a fuller LMR reduction.
+    int cutoffCount[MAX_PLY] = {};
 
     int nodes = 0;
     int qNodes = 0;
@@ -567,6 +571,9 @@ class Search {
             }
         }
 
+        // Fresh cutoff-count slot for this node's own children, about to be iterated below.
+        if (ply + 1 < MAX_PLY) cutoffCount[ply + 1] = 0;
+
         uint16_t counterMove = MOVE_NONE;
         if (prevMove != MOVE_NONE) {
             counterMove = hist.countermoves[hist.pieceIdx(prevPiece)][toSq(prevMove)];
@@ -778,6 +785,8 @@ class Search {
                     // Improving: position is trending up, eval is reliable — search deeper.
                     if (improving) R--;
                     R += cutNode;  // at cut nodes, non-first moves are very unlikely to be best
+                    // This subtree hasn't shown itself to be "easy" yet, so don't trust the full reduction.
+                    if (cutoffCount[ply] < 4) R--;
                     int histScore = hist.history[hist.pieceIdx(m.movePiece)][toSq(m.move)];
                     // Clamp the history contribution to [-2, +2] so a single piece-square
                     // combination with extreme negative history can't inflate R beyond reason.
@@ -827,6 +836,7 @@ class Search {
 
             if (beta <= alpha) {
                 ttflag = TTFlagBeta;
+                if (ply != 0) cutoffCount[ply - 1]++;
                 int bonus = std::min(depth * depth, HistoryTables::MAX_HISTORY);
                 if (isQuiet) {
                     if (hist.killers[2*ply] != m.move) {
