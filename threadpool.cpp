@@ -6,15 +6,15 @@
 #include "search.cpp"
 
 // Lazy SMP orchestration: N Search instances (one per thread), each with its own
-// BoardType copy, sharing Search's single static TT. Thread 0 (the "main" thread)
+// MagicBoard copy, sharing Search's single static TT. Thread 0 (the "main" thread)
 // always owns time management and is authoritative for the reported bestmove/eval/PV;
 // helper threads run the same root position independently and their results are
 // discarded except for their node counts.
 class SearchThreadPool {
-    vector<unique_ptr<BoardType>> boards;
+    vector<unique_ptr<MagicBoard>> boards;
     vector<unique_ptr<Search>> workers;
 
-    string runOnAllThreads(BoardType& root, const std::function<string(Search&, BoardType&)>& runOne) {
+    string runOnAllThreads(MagicBoard& root, const std::function<string(Search&, MagicBoard&)>& runOne) {
         Search::ensureTTAllocated();  // install the default-size TT if no `setoption Hash` did
         int n = (int)workers.size();
         for (int i = 0; i < n; i++) {
@@ -57,7 +57,7 @@ public:
         boards.resize(n);
         for (int i = oldSize; i < n; i++) {
             workers[i] = make_unique<Search>(i);
-            boards[i] = make_unique<BoardType>();
+            boards[i] = make_unique<MagicBoard>();
         }
     }
 
@@ -78,14 +78,14 @@ public:
     // Thread 0's worker, for single-threaded debug/introspection commands (e.g. `legal`).
     Search& main() { return *workers[0]; }
 
-    string search(BoardType& root, int maxDepth) {
-        return runOnAllThreads(root, [maxDepth](Search& w, BoardType& b) {
+    string search(MagicBoard& root, int maxDepth) {
+        return runOnAllThreads(root, [maxDepth](Search& w, MagicBoard& b) {
             return w.getBestMove(b, maxDepth);
         });
     }
 
-    string search(BoardType& root, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
-        return runOnAllThreads(root, [=](Search& w, BoardType& b) {
+    string search(MagicBoard& root, int whiteTimeMs, int blackTimeMs, int whiteIncMs, int blackIncMs) {
+        return runOnAllThreads(root, [=](Search& w, MagicBoard& b) {
             return w.getBestMove(b, whiteTimeMs, blackTimeMs, whiteIncMs, blackIncMs);
         });
     }
@@ -93,9 +93,9 @@ public:
     // `go nodes <n>`: split the budget evenly across Lazy SMP threads so the
     // combined node count reported at the end lands near the requested total.
     // Exact for the common Threads=1 case.
-    string searchNodes(BoardType& root, long nodeLimit) {
+    string searchNodes(MagicBoard& root, long nodeLimit) {
         long perThread = max(1L, nodeLimit / (long)workers.size());
-        return runOnAllThreads(root, [perThread](Search& w, BoardType& b) {
+        return runOnAllThreads(root, [perThread](Search& w, MagicBoard& b) {
             return w.getBestMoveNodeLimited(b, perThread);
         });
     }

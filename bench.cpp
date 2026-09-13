@@ -65,7 +65,7 @@ inline int runBench(int depth = 10) {
 
     auto start = std::chrono::high_resolution_clock::now();
     for (const char* fen : benchFens) {
-        BoardType board;
+        MagicBoard board;
         board.setupFromFen(fen);  // rebuilds the accumulator when an NNUE is loaded
 
         SearchThreadPool pool;  // 1 thread, fresh killers/history — determinism requirement

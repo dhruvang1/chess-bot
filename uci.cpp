@@ -14,7 +14,7 @@ using namespace std;
 class Uci {
 
     private:
-    BoardType board;
+    MagicBoard board;
     SearchThreadPool pool;
     int maxDepth = 64;
     int moves = 0;
@@ -114,7 +114,7 @@ class Uci {
                 }
             }
         } else if (msg == "ucinewgame") {
-            board = BoardType();
+            board = MagicBoard();
             pool.newGame();
             pool.setMaxDepth(maxDepth);
             moves = 0;
@@ -225,7 +225,7 @@ class Uci {
             } else {
                 if (datagen) {
                     int eval = pool.lastEval();
-                    if (board.turn == BoardType::BLACK) eval = -eval;
+                    if (board.turn == MagicBoard::BLACK) eval = -eval;
                     datagenFile << board.getFen() << " | " << eval << "\n";
                     board.processMove(bestMove);
                     moves++;
@@ -241,7 +241,7 @@ class Uci {
             moves--;
         } else if (tokens[0] == "eval") {
             if (tokens.size() > 1) {
-                BoardType boardCpy = board;
+                MagicBoard boardCpy = board;
                 for(int i = 1; i < tokens.size();i++) {
                     boardCpy.processMove(tokens[i]);
                     cout << tokens[i] << " " << boardCpy.getBoardEval() << endl;
@@ -278,8 +278,8 @@ class Uci {
         } else if (tokens[0] == "fen") {
             cout << board.getFen() << endl;
         } else if (tokens[0] == "print") {
-            cout << board.printBoard(board.turn == BoardType::WHITE);
-            string stm = (board.turn == BoardType::WHITE) ? "White" : "Black";
+            cout << board.printBoard(board.turn == MagicBoard::WHITE);
+            string stm = (board.turn == MagicBoard::WHITE) ? "White" : "Black";
             cout << "   Side to move: " << stm << "\n";
             try {
                 int eval = board.getBoardEval();
