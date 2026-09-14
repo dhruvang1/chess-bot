@@ -140,7 +140,7 @@ class Search {
         string s;
         for (int i = 0; i < pvLength[ply]; i++) {
             if (i > 0) s += ' ';
-            s += moveToUci(pvTable[ply][ply + i]);
+            s += board->moveToUciStr(pvTable[ply][ply + i]);
         }
         return s;
     }
@@ -192,8 +192,8 @@ class Search {
             lastDepthEvaluated = 0;
             lastEval = 0;
             lastSelDepth = 0;
-            lastPvLine = moveToUci(forced);
-            return moveToUci(forced);
+            lastPvLine = board->moveToUciStr(forced);
+            return board->moveToUciStr(forced);
         }
 
         float timeScale = 1.0f;
@@ -322,7 +322,7 @@ class Search {
         lastDepthEvaluated = depthEvaluated;
         lastEval = bestMoveEval;
         lastPvLine = bestMoveLine;
-        return moveToUci(bestMove);
+        return board->moveToUciStr(bestMove);
     }
 
     public:

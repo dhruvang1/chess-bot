@@ -19,6 +19,7 @@ class Uci {
     int maxDepth = 64;
     int moves = 0;
     bool fromFen = false;
+    bool chess960 = false;
     bool datagen = false;
     ofstream datagenFile;
     int gameCount = 0;
@@ -85,6 +86,7 @@ class Uci {
             cout << "option name Hash type spin default " << DEFAULT_HASH_MB << " min 1 max 65536" << endl;
             cout << "option name Threads type spin default 1 min 1 max 128" << endl;
             cout << "option name NNUEPath type string default <empty>" << endl;
+            cout << "option name UCI_Chess960 type check default false" << endl;
             cout << "uciok" << endl;
         } else if (msg == "isready") {
             cout << "readyok" << endl;
@@ -98,6 +100,9 @@ class Uci {
                     Search::resizeTT(stoi(tokens[4]));
                 } else if (tokens[2] == "Threads") {
                     pool.setThreads(stoi(tokens[4]));
+                } else if (tokens[2] == "UCI_Chess960") {
+                    chess960 = (tokens[4] == "true");
+                    board.setChess960(chess960);
                 } else if (tokens[2] == "NNUEPath") {
                     // join remaining tokens to support paths with spaces
                     string path;
@@ -115,6 +120,7 @@ class Uci {
             }
         } else if (msg == "ucinewgame") {
             board = MagicBoard();
+            board.setChess960(chess960); // UCI_Chess960 persists across ucinewgame
             pool.newGame();
             pool.setMaxDepth(maxDepth);
             moves = 0;

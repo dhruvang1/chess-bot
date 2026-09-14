@@ -13,3 +13,5 @@ target_link_libraries(chess_magic PRIVATE Threads::Threads)
 
 add_executable(test_board test/test_board.cpp staticEvals.cpp)
 add_executable(test_nnue test/test_nnue.cpp)
+add_executable(test_perft960 test/test_perft960.cpp staticEvals.cpp)
+add_executable(test_perft_standard test/test_perft_standard.cpp staticEvals.cpp)

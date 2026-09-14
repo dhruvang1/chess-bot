@@ -24,9 +24,16 @@ static inline uint16_t encodePromo(int from, int to, char piece) {
     return (uint16_t)(from | (to << 6) | (promo << 12) | (1 << 14));
 }
 
+// Explicit flag (bit 15) — Chess960 castling can have zero king displacement,
+// so it can't be inferred from movement alone.
+static inline uint16_t encodeCastle(int from, int to) {
+    return (uint16_t)(from | (to << 6) | (1 << 15));
+}
+
 static inline int fromSq(uint16_t m) { return m & 0x3F; }
 static inline int toSq(uint16_t m) { return (m >> 6) & 0x3F; }
 static inline bool isPromoMove(uint16_t m) { return (m >> 14) & 1; }
+static inline bool isCastleMove(uint16_t m) { return (m >> 15) & 1; }
 static inline char promoChar(uint16_t m) {
     static const char pieces[] = {'n', 'b', 'r', 'q'};
     return pieces[(m >> 12) & 3];
