@@ -3,6 +3,8 @@
 #include <sstream>
 #include <vector>
 #include <cstdint>
+#include <cctype>
+#include <algorithm>
 #include <format>
 #include <unordered_map>
 #include "move.hpp"
@@ -150,8 +152,8 @@ public:
         initPieceValues();
         initEvalMap();
         initGamePhaseTable();
-        initCastlingMask();
         setup();
+        initCastlingMask();
         initPassPawnMasks();
         initKnightAttacks();
         initKingAttacks();
@@ -223,14 +225,46 @@ public:
 
         turn = (activeColor == "b") ? BLACK : WHITE;
 
+        // King home files — needed to interpret Shredder-FEN rook-file letters and to locate the rooks.
+        int kingCol[2] = {4, 4};
+        for (int c = 0; c < 8; c++) {
+            if (board[toSq(0, c)] == 'K') kingCol[WHITE] = c;
+            if (board[toSq(7, c)] == 'k') kingCol[BLACK] = c;
+        }
+
         for (char c : castling) {
-            switch (c) {
-                case 'K': castlingRights |= WHITE_OO;  break;
-                case 'Q': castlingRights |= WHITE_OOO; break;
-                case 'k': castlingRights |= BLACK_OO;  break;
-                case 'q': castlingRights |= BLACK_OOO; break;
+            if (c == 'K') castlingRights |= WHITE_OO;
+            else if (c == 'Q') castlingRights |= WHITE_OOO;
+            else if (c == 'k') castlingRights |= BLACK_OO;
+            else if (c == 'q') castlingRights |= BLACK_OOO;
+            else if (isalpha((unsigned char)c)) {
+                // Shredder-FEN: rook file letter (upper=White, lower=Black); side is
+                // determined by comparing the file to that color's king column.
+                bool white = isupper((unsigned char)c);
+                int file = tolower((unsigned char)c) - 'a';
+                if (white) castlingRights |= (file > kingCol[WHITE]) ? WHITE_OO : WHITE_OOO;
+                else       castlingRights |= (file > kingCol[BLACK]) ? BLACK_OO : BLACK_OOO;
             }
         }
+
+        // Derive king/rook home squares from rights + placement — drives all castling logic below.
+        kingStartSq[WHITE] = toSq(0, kingCol[WHITE]);
+        kingStartSq[BLACK] = toSq(7, kingCol[BLACK]);
+        rookStartSq[WHITE][0] = rookStartSq[WHITE][1] = -1;
+        rookStartSq[BLACK][0] = rookStartSq[BLACK][1] = -1;
+        if (castlingRights & WHITE_OO)
+            for (int c = kingCol[WHITE] + 1; c < 8; c++)
+                if (board[toSq(0, c)] == 'R') { rookStartSq[WHITE][0] = toSq(0, c); break; }
+        if (castlingRights & WHITE_OOO)
+            for (int c = kingCol[WHITE] - 1; c >= 0; c--)
+                if (board[toSq(0, c)] == 'R') { rookStartSq[WHITE][1] = toSq(0, c); break; }
+        if (castlingRights & BLACK_OO)
+            for (int c = kingCol[BLACK] + 1; c < 8; c++)
+                if (board[toSq(7, c)] == 'r') { rookStartSq[BLACK][0] = toSq(7, c); break; }
+        if (castlingRights & BLACK_OOO)
+            for (int c = kingCol[BLACK] - 1; c >= 0; c--)
+                if (board[toSq(7, c)] == 'r') { rookStartSq[BLACK][1] = toSq(7, c); break; }
+        initCastlingMask();
 
         if (enPassant != "-") {
             enPassantCol = enPassant[0] - 'a';
@@ -258,7 +292,28 @@ public:
     }
 
     void processMove(const string& uciStr) {
-        processMove(uciToMove(uciStr));
+        processMove(parseUciMove(uciStr));
+    }
+
+    // Accepts castling in either notation: king-moves-two-squares (standard) or
+    // king-captures-own-rook (Chess960) — both are unambiguous on their own.
+    uint16_t parseUciMove(const string& uciStr) const {
+        if (uciStr.length() < 4) return MOVE_NONE;
+        int from = (uciStr[0] - 'a') + (uciStr[1] - '1') * 8;
+        int to   = (uciStr[2] - 'a') + (uciStr[3] - '1') * 8;
+
+        if (isKing(board[from])) {
+            if (board[to] != ' ' && isPieceOfColor(turn, board[to]) && isRook(board[to])) {
+                bool kingside = colOf(to) > colOf(from);
+                return encodeCastle(from, toSq(rowOf(from), kingside ? 6 : 2));
+            }
+            if (rowOf(to) == rowOf(from) && abs(colOf(to) - colOf(from)) == 2) {
+                return encodeCastle(from, to);
+            }
+        }
+
+        if (uciStr.length() == 5) return encodePromo(from, to, uciStr[4]);
+        return encodeMove(from, to);
     }
 
     void processMove(uint16_t move) {
@@ -282,7 +337,8 @@ public:
         las.plyDeltas[pendingPly] = {};
         las.accStack[pendingPly].correct[0] = las.accStack[pendingPly].correct[1] = false;
 
-        bool resetClock = isPawn(movedPiece) || gonePiece != ' ';
+        // Castling can land on the rook's square, making gonePiece look like a capture — excluded here.
+        bool resetClock = isPawn(movedPiece) || (gonePiece != ' ' && !isCastleMove(move));
 
         // Snapshot irreversible state BEFORE any mutation
         UndoInfo info {
@@ -354,38 +410,28 @@ public:
                 }
             }
 
-        } else if (isKing(board[currSq]) && abs(newSq - currSq) == 2) {
-            // if King is moving two squares it is castling
-            // update rook position
-            if (newSq == currSq + 2) {
-                // kingside castle — move rook
-                int rookFrom = currSq + 3;
-                int rookTo   = currSq + 1;
-                char rook = board[rookFrom];
-                boardHash ^= pieceHash(rook, rookFrom);
-                boardHash ^= pieceHash(rook, rookTo);
-                getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookTo] = rook;
-                board[rookFrom] = ' ';
-                movePieceEval(rook, rookFrom, rookTo);
-            }
-            else if (newSq == currSq - 2) {
-                // queenside castle — move rook
-                int rookFrom = currSq - 4;
-                int rookTo   = currSq - 1;
-                char rook = board[rookFrom];
-                boardHash ^= pieceHash(rook, rookFrom);
-                boardHash ^= pieceHash(rook, rookTo);
-                getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookTo] = rook;
-                board[rookFrom] = ' ';
-                movePieceEval(rook, rookFrom, rookTo);
-            }
+        } else if (isCastleMove(move)) {
+            // newSq is always the normalized g/c-file destination (see move generation).
+            bool kingside = colOf(newSq) == 6;
+            int rookFrom = rookStartSq[turn][kingside ? 0 : 1];
+            int rookTo   = toSq(rowOf(newSq), kingside ? 5 : 3);
+            char rook = board[rookFrom];
+
+            boardHash ^= pieceHash(rook, rookFrom);
+            boardHash ^= pieceHash(rook, rookTo);
             boardHash ^= pieceHash(movedPiece, currSq);
             boardHash ^= pieceHash(movedPiece, newSq);
-            getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
-            board[newSq] = movedPiece;
+            // Guard from==to: sqToBB(x)|sqToBB(x) is a single bit, which would wrongly clear the piece.
+            if (rookFrom != rookTo) getBitboard(rook) ^= sqToBB(rookFrom) | sqToBB(rookTo);
+            if (currSq != newSq) getBitboard(movedPiece) ^= sqToBB(currSq) | sqToBB(newSq);
+
+            // Clear both source squares before writing either destination — they can coincide (king/rook swap).
             board[currSq] = ' ';
+            board[rookFrom] = ' ';
+            board[newSq] = movedPiece;
+            board[rookTo] = rook;
+
+            movePieceEval(rook, rookFrom, rookTo);
             movePieceEval(movedPiece, currSq, newSq);
         } else {
             // capW / capB: feature indices of the piece being removed from the board.
@@ -486,26 +532,22 @@ public:
                 getBitboard(info.capturedPiece) |= sqToBB(to);
             }
         }
-        else if (isKing(board[to]) && abs(from - to) == 2) {
-            // Castling: reverse king move
-            getBitboard(board[to]) ^= sqToBB(from) | sqToBB(to);
-            board[from] = board[to];
-            board[to] = ' ';
+        else if (isCastleMove(info.move)) {
+            // turn is the mover's color here (flipTurn() already ran above).
+            bool kingside = colOf(to) == 6;
+            int rookFrom = rookStartSq[turn][kingside ? 0 : 1]; // original rook square
+            int rookNow  = toSq(rowOf(to), kingside ? 5 : 3);    // rook's post-castle square
+            char king = board[to];
+            char rook = board[rookNow];
 
-            // Reverse rook move
-            if (to == from + 2) {
-                const int rookFrom = from + 3;
-                const int rookTo = from + 1;
-                getBitboard(board[rookTo]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookFrom] = board[rookTo];
-                board[rookTo] = ' ';
-            } else {
-                const int rookFrom = from - 4;
-                const int rookTo = from - 1;
-                getBitboard(board[rookTo]) ^= sqToBB(rookFrom) | sqToBB(rookTo);
-                board[rookFrom] = board[rookTo];
-                board[rookTo] = ' ';
-            }
+            // Same guards as processMove's castle branch (see there).
+            if (from != to) getBitboard(king) ^= sqToBB(from) | sqToBB(to);
+            if (rookNow != rookFrom) getBitboard(rook) ^= sqToBB(rookNow) | sqToBB(rookFrom);
+
+            board[to] = ' ';
+            board[rookNow] = ' ';
+            board[from] = king;
+            board[rookFrom] = rook;
         }
         else {
             // Reverse piece movement
@@ -592,7 +634,7 @@ public:
 
         // Castling moves are emitted already-legal by generateMoves (king-not-in-check and
         // traversed squares verified safe), so trust them.
-        if (isKing(m.movePiece) && abs(to - from) == 2) return true;
+        if (isCastleMove(m.move)) return true;
 
         const Color us   = turn;
         const Color them = flipColor(us);
@@ -753,6 +795,11 @@ public:
     }
 
     bool isSquareAttackedByColor(int sq, Color color) {
+        return isSquareAttackedByColor(sq, color, occupied);
+    }
+
+    // Occupancy-parameterized for callers simulating a mid-move board (see canCastle).
+    bool isSquareAttackedByColor(int sq, Color color, uint64_t occ) {
         uint64_t pawns, knights, bishops, rooks, queens, king;
         if (color == WHITE) {
             pawns = whitePawns; knights = whiteKnights; bishops = whiteBishops;
@@ -766,8 +813,8 @@ public:
         return (pawnAttackTable[1 - color][sq] & pawns)
              | (knightAttackTable[sq] & knights)
              | (kingAttackTable[sq] & king)
-             | (getBishopAttacks(sq, occupied) & (bishops | queens))
-             | (getRookAttacks(sq, occupied) & (rooks | queens));
+             | (getBishopAttacks(sq, occ) & (bishops | queens))
+             | (getRookAttacks(sq, occ) & (rooks | queens));
     }
 
     bool isSquareAttackedByColor(int row, int col, Color color) {
@@ -1319,12 +1366,19 @@ public:
         // Active color
         fen += (turn == WHITE) ? " w " : " b ";
 
-        // Castling
+        // Castling — Shredder-FEN letters in Chess960 mode, plain KQkq otherwise.
         string castling;
-        if (castlingRights & WHITE_OO)  castling += 'K';
-        if (castlingRights & WHITE_OOO) castling += 'Q';
-        if (castlingRights & BLACK_OO)  castling += 'k';
-        if (castlingRights & BLACK_OOO) castling += 'q';
+        if (chess960) {
+            if (castlingRights & WHITE_OO)  castling += (char)toupper('a' + colOf(rookStartSq[WHITE][0]));
+            if (castlingRights & WHITE_OOO) castling += (char)toupper('a' + colOf(rookStartSq[WHITE][1]));
+            if (castlingRights & BLACK_OO)  castling += (char)('a' + colOf(rookStartSq[BLACK][0]));
+            if (castlingRights & BLACK_OOO) castling += (char)('a' + colOf(rookStartSq[BLACK][1]));
+        } else {
+            if (castlingRights & WHITE_OO)  castling += 'K';
+            if (castlingRights & WHITE_OOO) castling += 'Q';
+            if (castlingRights & BLACK_OO)  castling += 'k';
+            if (castlingRights & BLACK_OOO) castling += 'q';
+        }
         fen += castling.empty() ? "-" : castling;
 
         // En passant
@@ -1350,8 +1404,28 @@ public:
         return m == MOVE_NONE ? "null" : moveToUci(m);
     }
 
+    // Chess960-aware rendering: castling as king-captures-own-rook (e1h1) instead of e1g1.
+    string moveToUciStr(uint16_t m) const {
+        if (m == MOVE_NONE) return "";
+        if (chess960 && isCastleMove(m)) {
+            int from = ::fromSq(m), to = ::toSq(m);
+            bool kingside = colOf(to) == 6;
+            int rookSq = rookStartSq[rowOf(to) == 0 ? WHITE : BLACK][kingside ? 0 : 1];
+            string s;
+            s += (char)('a' + colOf(from)); s += (char)('1' + rowOf(from));
+            s += (char)('a' + colOf(rookSq)); s += (char)('1' + rowOf(rookSq));
+            return s;
+        }
+        return moveToUci(m);
+    }
+
     int getCastlingRights() {
         return castlingRights;
+    }
+
+    // Only affects UCI notation and getFen() output — move generation/do/undo are always Chess960-general.
+    void setChess960(bool enabled) {
+        chess960 = enabled;
     }
 
     char getBoardChar(int row, int col) const {
@@ -1554,6 +1628,11 @@ private:
     int castlingRights = WHITE_OO | WHITE_OOO | BLACK_OO | BLACK_OOO; // 15 at start
     int castlingMask[64]; // mapping squares to castling rights effects
     int halfMoveClock = 0;
+
+    // Chess960: king/rook home squares derived from the FEN, not hardcoded to e1/a1/h1.
+    bool chess960 = false;
+    int kingStartSq[2] = {4, 60};              // [color]
+    int rookStartSq[2][2] = {{7, 0}, {63, 56}}; // [color][0=kingside, 1=queenside], -1 if none
 
     int mgEval = 0;
     int egEval = 0;
@@ -1879,17 +1958,18 @@ private:
         }
     }
 
+    // Built from kingStartSq/rookStartSq; must be re-run whenever those change (setup(), setupFromFen()).
     void initCastlingMask() {
         for (int i = 0; i < 64; i++) {
             castlingMask[i] = 15; // no effect by default
         }
 
-        castlingMask[0]  &= ~WHITE_OOO; // a1 rook
-        castlingMask[4]  &= ~(WHITE_OO | WHITE_OOO); // e1 king
-        castlingMask[7]  &= ~WHITE_OO;  // h1 rook
-        castlingMask[56] &= ~BLACK_OOO; // a8 rook
-        castlingMask[60] &= ~(BLACK_OO | BLACK_OOO); // e8 king
-        castlingMask[63] &= ~BLACK_OO;  // h8 rook
+        if (rookStartSq[WHITE][0] >= 0) castlingMask[rookStartSq[WHITE][0]] &= ~WHITE_OO;
+        if (rookStartSq[WHITE][1] >= 0) castlingMask[rookStartSq[WHITE][1]] &= ~WHITE_OOO;
+        if (rookStartSq[BLACK][0] >= 0) castlingMask[rookStartSq[BLACK][0]] &= ~BLACK_OO;
+        if (rookStartSq[BLACK][1] >= 0) castlingMask[rookStartSq[BLACK][1]] &= ~BLACK_OOO;
+        castlingMask[kingStartSq[WHITE]] &= ~(WHITE_OO | WHITE_OOO);
+        castlingMask[kingStartSq[BLACK]] &= ~(BLACK_OO | BLACK_OOO);
     }
 
 
@@ -1993,27 +2073,41 @@ private:
         moves.emplace_back(encodePromoSq(from, to, 'b'), pawnChar, false, true);
     }
 
-    bool canShortCastle() {
-        int kingSq = (turn == WHITE) ? 4 : 60;
-        int rights = (turn == WHITE) ? WHITE_OO : BLACK_OO;
+    // Generalized castling legality — works for any king/rook home squares.
+    bool canCastle(bool kingside) {
+        int rights = kingside ? (turn == WHITE ? WHITE_OO : BLACK_OO)
+                               : (turn == WHITE ? WHITE_OOO : BLACK_OOO);
         if (!(castlingRights & rights)) return false;
-        if (board[kingSq + 1] != ' ' || board[kingSq + 2] != ' ') return false;
+
+        int side = kingside ? 0 : 1;
+        int rookSq = rookStartSq[turn][side];
+        if (rookSq < 0) return false;
+
+        int kingSq = __builtin_ctzll(turn == WHITE ? whiteKing : blackKing);
+        int rank = rowOf(kingSq);
+        int kingDest = toSq(rank, kingside ? 6 : 2);
+        int rookDest = toSq(rank, kingside ? 5 : 3);
+
+        int lo = min({kingSq, kingDest, rookSq, rookDest});
+        int hi = max({kingSq, kingDest, rookSq, rookDest});
+        for (int sq = lo; sq <= hi; sq++) {
+            if (sq == kingSq || sq == rookSq) continue;
+            if (board[sq] != ' ') return false;
+        }
+
+        // Remove king+rook from occupancy first — the rook itself can be blocking a
+        // check that castling would expose (Chess960: rook adjacent to king).
         Color enemy = flipColor(turn);
-        return !isSquareAttackedByColor(kingSq, enemy)
-            && !isSquareAttackedByColor(kingSq + 1, enemy)
-            && !isSquareAttackedByColor(kingSq + 2, enemy);
+        uint64_t occDuring = occupied & ~sqToBB(kingSq) & ~sqToBB(rookSq);
+        int kLo = min(kingSq, kingDest), kHi = max(kingSq, kingDest);
+        for (int sq = kLo; sq <= kHi; sq++) {
+            if (isSquareAttackedByColor(sq, enemy, occDuring)) return false;
+        }
+        return true;
     }
 
-    bool canLongCastle() {
-        int kingSq = (turn == WHITE) ? 4 : 60;
-        int rights = (turn == WHITE) ? WHITE_OOO : BLACK_OOO;
-        if (!(castlingRights & rights)) return false;
-        if (board[kingSq - 1] != ' ' || board[kingSq - 2] != ' ' || board[kingSq - 3] != ' ') return false;
-        Color enemy = flipColor(turn);
-        return !isSquareAttackedByColor(kingSq, enemy)
-            && !isSquareAttackedByColor(kingSq - 1, enemy)
-            && !isSquareAttackedByColor(kingSq - 2, enemy);
-    }
+    bool canShortCastle() { return canCastle(true); }
+    bool canLongCastle() { return canCastle(false); }
 
     void addPieceMoves(MoveList& legalMoves, uint64_t attacks, int fromSq, char piece, bool capturesOnly) {
         uint64_t friendly = (turn == WHITE) ? allWhite : allBlack;
@@ -2149,13 +2243,14 @@ private:
         }
         occupied ^= myKing;
 
-        // Castling
+        // Castling: destination is always the g/c-file square, tagged with the explicit castle flag.
         if (!capturesOnly) {
+            int rank = rowOf(kingSq);
             if (canShortCastle()) {
-                legalMoves.emplace_back(encodeSq(kingSq, kingSq + 2), kingChar, true, false);
+                legalMoves.emplace_back(encodeCastle(kingSq, toSq(rank, 6)), kingChar, true, false);
             }
             if (canLongCastle()) {
-                legalMoves.emplace_back(encodeSq(kingSq, kingSq - 2), kingChar, true, false);
+                legalMoves.emplace_back(encodeCastle(kingSq, toSq(rank, 2)), kingChar, true, false);
             }
         }
     }
