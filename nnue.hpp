@@ -199,6 +199,34 @@ inline void accFusedCaptureFrom(int16_t* __restrict__ dst, const int16_t* __rest
         dst[i] = static_cast<int16_t>(src[i] + static_cast<int16_t>(rowAdd[i] - rowSub1[i] - rowSub2[i]));
 }
 
+// Applies n pending fused deltas (D has sub1, sub2 (-1 = none), add1) to dst = src in
+// register tiles: each tile of the accumulator is loaded once, takes every delta, and is
+// stored once, instead of one load/store pass over the whole accumulator per delta.
+// int16 arithmetic wraps, so the result is bit-identical to applying the deltas in turn.
+#ifdef __ARM_NEON
+template <class D>
+inline void accApplyMany(int16_t* __restrict__ dst, const int16_t* __restrict__ src,
+                         const D* d, int n) {
+    constexpr int REGS = 16, TILE = REGS * 8;
+    static_assert(NNUE_HIDDEN % TILE == 0, "hidden size must be a multiple of the tile");
+    for (int t = 0; t < NNUE_HIDDEN; t += TILE) {
+        int16x8_t r[REGS];
+        for (int j = 0; j < REGS; j++) r[j] = vld1q_s16(src + t + j * 8);
+        for (int k = 0; k < n; k++) {
+            const int16_t* add = nnueWeights.l0w[d[k].add1] + t;
+            const int16_t* sb1 = nnueWeights.l0w[d[k].sub1] + t;
+            for (int j = 0; j < REGS; j++)
+                r[j] = vaddq_s16(r[j], vsubq_s16(vld1q_s16(add + j * 8), vld1q_s16(sb1 + j * 8)));
+            if (d[k].sub2 != -1) {
+                const int16_t* sb2 = nnueWeights.l0w[d[k].sub2] + t;
+                for (int j = 0; j < REGS; j++) r[j] = vsubq_s16(r[j], vld1q_s16(sb2 + j * 8));
+            }
+        }
+        for (int j = 0; j < REGS; j++) vst1q_s16(dst + t + j * 8, r[j]);
+    }
+}
+#endif
+
 // Runs the output layer. bucket = (popcount(occupied) - 2) / 4.
 #ifdef __ARM_NEON
 // Lizard SCReLU: reorder (v*v)*w → (v*w)*v so the first multiply stays in

@@ -96,8 +96,18 @@ struct Move {
 
 struct MoveList {
     static constexpr int MAX_MOVES = 256;
-    Move moves[MAX_MOVES];
+    union { Move moves[MAX_MOVES]; };
     int count = 0;
+
+    MoveList() {}
+    MoveList(const MoveList& o) : count(o.count) {
+        std::memcpy(moves, o.moves, count * sizeof(Move));
+    }
+    MoveList& operator=(const MoveList& o) {
+        count = o.count;
+        std::memcpy(moves, o.moves, count * sizeof(Move));
+        return *this;
+    }
 
     void add(const Move& m) { moves[count++] = m; }
 

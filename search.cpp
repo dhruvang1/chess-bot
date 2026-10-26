@@ -7,6 +7,9 @@
 #include <cmath>
 #include <chrono>
 #include <atomic>
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#endif
 
 #include "magicBoard.cpp"
 
@@ -691,12 +694,11 @@ class Search {
         const int* lmpThreshold = improving ? lmpThresholdImp : lmpThresholdNotImp;
         bool skipQuietMoves = false;
         int moveIdx = -1;
+        int32_t sc[MoveList::MAX_MOVES + 4];
+        loadScores(legalMoves, sc);
         for(int i = 0; i < legalMoves.size(); i++) {
             // Selection sort: swap best remaining move to current position
-            for (int j = i + 1; j < legalMoves.size(); j++) {
-                if (legalMoves[j].score > legalMoves[i].score)
-                    std::swap(legalMoves[i], legalMoves[j]);
-            }
+            pickBestMove(legalMoves, sc, i);
             const Move& m = legalMoves[i];
             if (m.move == excludedMove) continue;
             if (!board->isLegalMove(m)) continue;   // skip pseudo-legal-but-illegal (pinned) moves
@@ -766,6 +768,7 @@ class Search {
             moveStack[ply] = m.move;
             pieceStack[ply] = m.movePiece;
             nodes++;
+            prefetchTT(board->hashAfter(m));
             board->processMove(m.move);
             prefetchTT(board->getHash());
             int ext = (m.move == ttMove) ? singularExtension : 0;
@@ -979,11 +982,10 @@ class Search {
 
         int maxEval = inCheck ? -(MagicBoard::checkmateEval - ply) : alpha;
         int delta = 300;
+        int32_t sc[MoveList::MAX_MOVES + 4];
+        loadScores(legalMoves, sc);
         for(int i = 0; i < legalMoves.size(); i++) {
-            for (int j = i + 1; j < legalMoves.size(); j++) {
-                if (legalMoves[j].score > legalMoves[i].score)
-                    std::swap(legalMoves[i], legalMoves[j]);
-            }
+            pickBestMove(legalMoves, sc, i);
             const Move& m = legalMoves[i];
             bool isQuiet = !(m.isCapture || m.isPromotion);
             stats.qMovesConsidered++;
@@ -1004,6 +1006,7 @@ class Search {
 
             stats.qMovesSearched++;
             qNodes++;
+            prefetchTT(board->hashAfter(m));
             board->processMove(m.move);
             prefetchTT(board->getHash());
             int eval = -quiescenceSearch(-beta, -alpha, depth - 1, ply + 1);
@@ -1120,6 +1123,40 @@ class Search {
     // Must clear the worst-case mover(20000)+2*captHist(32768) swing on the smallest real
     // victim gap (22, bishop vs knight) so MVV-LVA can't be reordered: 3000*22=66000 > 52768.
     static constexpr int MVVLVA_MULT = 3000;
+    // Contiguous copy of the move scores (padded with INT32_MIN to a multiple of 4) so
+    // the best remaining move can be found with a few vector ops instead of a strided,
+    // branchy scan over 16-byte Moves.
+    static inline void loadScores(const MoveList& list, int32_t* sc) {
+        const int n = list.size();
+        for (int k = 0; k < n; k++) sc[k] = list[k].score;
+        for (int k = n; k < n + 4; k++) sc[k] = INT32_MIN;
+    }
+
+    // Move the first highest-scored move among [i, n) into slot i (one swap).
+    static inline void pickBestMove(MoveList& list, int32_t* sc, int i) {
+        const int n = list.size();
+        int best = i;
+#ifdef __ARM_NEON
+        int32x4_t vmax = vdupq_n_s32(INT32_MIN);
+        for (int j = i; j < n; j += 4) vmax = vmaxq_s32(vmax, vld1q_s32(sc + j));
+        const int32_t m = vmaxvq_s32(vmax);
+        const int32x4_t vm = vdupq_n_s32(m);
+        for (int j = i; j < n; j += 4) {
+            if (vmaxvq_u32(vceqq_s32(vld1q_s32(sc + j), vm))) {
+                while (sc[j] != m) j++;
+                best = j;
+                break;
+            }
+        }
+#else
+        for (int j = i + 1; j < n; j++) if (sc[j] > sc[best]) best = j;
+#endif
+        if (best != i) {
+            std::swap(list[i], list[best]);
+            std::swap(sc[i], sc[best]);
+        }
+    }
+
     void scoreMoves(MoveList &legalMoves, uint16_t& ttMove, uint16_t& killer1, uint16_t& killer2,
                       uint16_t counterMove = MOVE_NONE,
                       char prevPc = ' ', int prevSq = -1,
@@ -1133,7 +1170,13 @@ class Search {
             if (m.move == ttMove)               { m.score = SCORE_TT; continue; }
             if (m.isPromotion)                  { m.score = SCORE_PROMOTION; continue; }
             if (m.isCapture) {
-                m.isLosingCapture = board->see(m) < 0;
+                // SEE can't be negative when the piece on the target square is worth at
+                // least as much as the capturer (the worst case is a 1-for-1 trade), so only
+                // run the full exchange when a bigger piece takes a smaller one. The victim is
+                // read from the board, as see() does, so en passant (empty target) still goes
+                // through the full exchange.
+                m.isLosingCapture = abs(pv[(int)board->pieceAt(toSq(m.move))]) < abs(pv[(int)m.movePiece])
+                                 && board->see(m) < 0;
                 // abs() for color-independent material-magnitude ranking.
                 int mvvlva = abs(MVVLVA_MULT * pv[m.capturePiece] + pv[m.movePiece]);
                 int ch = hist.captHist[hist.pieceIdx(m.movePiece)][toSq(m.move)][hist.pieceIdx(m.capturePiece) / 2];

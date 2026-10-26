@@ -16,6 +16,15 @@
 
 using namespace std;
 
+// Total slots needed by a slider attack table: square sq owns 1 << bits[sq].
+constexpr int sliderTableSize(const int (&bits)[64]) {
+    int total = 0;
+    for (int b : bits) total += 1 << b;
+    return total;
+}
+constexpr int BISHOP_TABLE_SIZE = sliderTableSize(BISHOP_BITS);
+constexpr int ROOK_TABLE_SIZE   = sliderTableSize(ROOK_BITS);
+
 // Per-(side × kingSq) cached accumulator for king bucket refreshes.
 // On a king move that changes the bucket, XOR current bitboards against
 // the cached snapshot to find only the diff, then apply that to the cached
@@ -665,6 +674,7 @@ public:
 
         // Non-king moves.
         const uint64_t enemyOcc = (them == WHITE) ? allWhite : allBlack;
+
         const uint64_t checkers = getAttackersTo(kingSq, occupied) & enemyOcc;
         const int numCheckers = __builtin_popcountll(checkers);
         if (numCheckers >= 2) return false;   // only a king move escapes a double check
@@ -856,6 +866,27 @@ public:
             // The first pass reads dst's starting values from `src` (the last
             // valid ply); the rest run in place on `dst`. A span with no delta
             // for this side leaves `seeded` false and falls through to a copy.
+#ifdef __ARM_NEON
+            // Two or more pending deltas: gather them and apply in one tiled pass.
+            {
+                int total = 0;
+                for (int p = base + 1; p <= ply; p++)
+                    total += (side == 0) ? las.plyDeltas[p].wCount : las.plyDeltas[p].bCount;
+                if (total >= 2) {
+                    LazyAccStack::FusedDelta chain[2 * LazyAccStack::MAX_PLY];
+                    int n = 0;
+                    for (int p = base + 1; p <= ply; p++) {
+                        const auto& pd = las.plyDeltas[p];
+                        const auto* ds = (side == 0) ? pd.w : pd.b;
+                        const int   c  = (side == 0) ? pd.wCount : pd.bCount;
+                        for (int i = 0; i < c; i++) chain[n++] = ds[i];
+                    }
+                    accApplyMany(dst, src, chain, n);
+                    las.accStack[ply].correct[side] = true;
+                    continue;
+                }
+            }
+#endif
             bool seeded = false;
             for (int p = base + 1; p <= ply; p++) {
                 const auto& pd    = las.plyDeltas[p];
@@ -1326,6 +1357,17 @@ public:
         return boardHash;
     }
 
+    // Approximate hash after playing m, for prefetching the child's TT bucket before the
+    // move is made. Covers piece moves, captures and the side flip; ignores castling,
+    // en passant and promotion, whose real hash differs (a wasted prefetch, never wrong).
+    uint64_t hashAfter(const Move& m) {
+        int from = ::fromSq(m.move), to = ::toSq(m.move);
+        uint64_t h = boardHash ^ hashHelper.getTurnHash()
+                   ^ pieceHash(m.movePiece, from) ^ pieceHash(m.movePiece, to);
+        if (m.isCapture) h ^= pieceHash(m.capturePiece, to);
+        return h;
+    }
+
     uint64_t getPawnHash() const {
         return whitePawns * 6364136223846793005ULL ^ blackPawns;
     }
@@ -1427,6 +1469,8 @@ public:
     void setChess960(bool enabled) {
         chess960 = enabled;
     }
+
+    char pieceAt(int sq) const { return board[sq]; }
 
     char getBoardChar(int row, int col) const {
         return board[toSq(row, col)];
@@ -2261,8 +2305,12 @@ private:
     uint64_t pawnAttackTable[2][64]{};  // [WHITE][sq], [BLACK][sq]
     uint64_t bishopMasks[64]{};
     uint64_t rookMasks[64]{};
-    uint64_t bishopLookup[64][512]{};   // max 2^9
-    uint64_t rookLookup[64][4096]{};    // max 2^12
+    // Slider attack tables packed back to back: square sq owns 1 << *_BITS[sq] slots
+    // starting at *Offset[sq], instead of a fixed 512 / 4096-slot row per square.
+    int bishopOffset[64]{};
+    int rookOffset[64]{};
+    uint64_t bishopLookup[BISHOP_TABLE_SIZE]{};
+    uint64_t rookLookup[ROOK_TABLE_SIZE]{};
 
     void initKnightAttacks() {
         const int offsets[8][2] = {{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}};
@@ -2332,6 +2380,11 @@ private:
     }
 
     void initSliderTables() {
+        int bOff = 0, rOff = 0;
+        for (int sq = 0; sq < 64; sq++) {
+            bishopOffset[sq] = bOff;  bOff += 1 << BISHOP_BITS[sq];
+            rookOffset[sq]   = rOff;  rOff += 1 << ROOK_BITS[sq];
+        }
         for (int sq = 0; sq < 64; sq++) {
             // Bishop table
             uint64_t mask = bishopMasks[sq];
@@ -2339,7 +2392,7 @@ private:
             uint64_t subset = 0;
             do {
                 int index = static_cast<int>((subset * BISHOP_MAGICS[sq]) >> shift);
-                bishopLookup[sq][index] = bishopAttacksSlow(sq, subset);
+                bishopLookup[bishopOffset[sq] + index] = bishopAttacksSlow(sq, subset);
                 subset = (subset - mask) & mask;
             } while (subset);
 
@@ -2349,7 +2402,7 @@ private:
             subset = 0;
             do {
                 int index = static_cast<int>((subset * ROOK_MAGICS[sq]) >> shift);
-                rookLookup[sq][index] = rookAttacksSlow(sq, subset);
+                rookLookup[rookOffset[sq] + index] = rookAttacksSlow(sq, subset);
                 subset = (subset - mask) & mask;
             } while (subset);
         }
@@ -2358,13 +2411,13 @@ private:
     uint64_t getBishopAttacks(int sq, uint64_t occ) const {
         uint64_t relevant = occ & bishopMasks[sq];
         int index = static_cast<int>((relevant * BISHOP_MAGICS[sq]) >> (64 - BISHOP_BITS[sq]));
-        return bishopLookup[sq][index];
+        return bishopLookup[bishopOffset[sq] + index];
     }
 
     uint64_t getRookAttacks(int sq, uint64_t occ) const {
         uint64_t relevant = occ & rookMasks[sq];
         int index = static_cast<int>((relevant * ROOK_MAGICS[sq]) >> (64 - ROOK_BITS[sq]));
-        return rookLookup[sq][index];
+        return rookLookup[rookOffset[sq] + index];
     }
 
     uint64_t getQueenAttacks(int sq, uint64_t occ) const {
