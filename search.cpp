@@ -148,8 +148,17 @@ class Search {
         return s;
     }
 
+    // Root is K+B+N vs K. KbnEval scores are predicted mate distances, so like mate scores they only compare
+    // across nodes once measured from the root: kbnAdj() shifts them by ply and the TT stores them relative to
+    // the node. Unshifted, a score from a deeper search reads higher than the same position searched shallower,
+    // and every entry carried over from earlier moves is deeper than a fresh one, so the search keeps choosing
+    // its old plan and stalls in the wrong-corner phase. Only the two TT helpers and the static-eval reads
+    // check it, so other games pay nothing.
+    bool kbnPly = false;
+
     void initSearch(MagicBoard& currentBoard) {
         this->board = &currentBoard;
+        kbnPly = currentBoard.isKbnVsK();
         nodes = 0;
         qNodes = 0;
         stats = SearchStats{};
@@ -520,7 +529,7 @@ class Search {
         int rawEval = 0;
         int staticEval = 0;
         if (!inCheck) {
-            rawEval = board->getBoardEval();
+            rawEval = kbnAdj(board->getBoardEval(), ply);
             int stm = board->turn;
             int pawnKey = board->getPawnHash() % HistoryTables::CORR_HIST_SIZE;
             auto [wHash, bHash] = board->getNonPawnHashes();
@@ -918,7 +927,7 @@ class Search {
     int quiescenceSearch(int alpha, int beta, int depth, int ply) {
         // Hard ply ceiling. Bail to a static eval.
         if (ply >= MAX_PLY - 1)  {
-            return board->getBoardEval();
+            return kbnAdj(board->getBoardEval(), ply);
         }
         
         pvLength[ply] = 0;
@@ -943,7 +952,7 @@ class Search {
         bool inCheck = board->isKingInCheck();
 
         if (depth <= 0 && !inCheck) {
-            return board->getBoardEval();
+            return kbnAdj(board->getBoardEval(), ply);
         }
 
         const TTEntry* ttEntry = getTTEntry(board->getHash());
@@ -959,7 +968,7 @@ class Search {
             // Can't stand pat under check — worst case is checkmate here
             boardEval = -(MagicBoard::checkmateEval - ply);
         } else {
-            boardEval = board->getBoardEval();
+            boardEval = kbnAdj(board->getBoardEval(), ply);
             if (boardEval >= beta) return boardEval;
             alpha = max(alpha, boardEval);
         }
@@ -1029,17 +1038,28 @@ class Search {
         return maxEval;
     }
 
+    // Static eval of the current node, root-relative when the root is K+B+N vs K (see kbnPly). A positive score
+    // means the side to move is winning and a draw is exactly 0, so the shift always moves toward 0.
+    inline int kbnAdj(int eval, int ply) const {
+        if (!kbnPly) return eval;
+        if (eval > 0 && eval < MagicBoard::mateThreshold) return eval - KbnEval::SCALE * ply;
+        if (eval < 0 && eval > -MagicBoard::mateThreshold) return eval + KbnEval::SCALE * ply;
+        return eval;
+    }
+
     // Convert root-relative mate score to position-relative for TT storage
-    static inline int mateScoreToTT(int eval, int ply) {
+    inline int mateScoreToTT(int eval, int ply) const {
         if (eval >= MagicBoard::mateThreshold) return eval + ply;
         if (eval <= -MagicBoard::mateThreshold) return eval - ply;
+        if (kbnPly) return eval > 0 ? eval + KbnEval::SCALE * ply : eval < 0 ? eval - KbnEval::SCALE * ply : 0;
         return eval;
     }
 
     // Convert position-relative mate score from TT back to root-relative
-    static inline int mateScoreFromTT(int eval, int ply) {
+    inline int mateScoreFromTT(int eval, int ply) const {
         if (eval >= MagicBoard::mateThreshold) return eval - ply;
         if (eval <= -MagicBoard::mateThreshold) return eval + ply;
+        if (kbnPly) return eval > 0 ? eval - KbnEval::SCALE * ply : eval < 0 ? eval + KbnEval::SCALE * ply : 0;
         return eval;
     }
 

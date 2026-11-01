@@ -15,6 +15,7 @@ Early iterations used Lichess games to generate diversity.
 | `hash.cpp` | Zobrist hashing |
 | `transposition.cpp` | Transposition table |
 | `nnue.h` | NNUE weight structs, accumulator ops, forward pass |
+| `kbnEval.hpp` / `kbnNetWeights.hpp` | K+B+N vs K evaluation: tiny net distilled from the exact mate distance (weights are generated) |
 | `magic_constants.h` | Magic numbers and slider table init |
 | `move.h` | Move encoding |
 
@@ -55,6 +56,11 @@ Early iterations used Lichess games to generate diversity.
 - Network loaded via `setoption name NNUEPath value <path>`
 - Trained with [bullet](https://github.com/jw1912/bullet)
 
+**K+B+N vs K** (`kbnEval.hpp`)
+- NNUE has no data for this ending and hand-written terms (distance to the right corner, king proximity, tropism, per-piece square tables) cannot express the 33-move manoeuvre needed against a defender sitting in the wrong-colour corner: they converted ~45% of random positions inside the 50-move rule against best defence.
+- Replaced by a 192-unit ReLU net over five one-hot features (defender king, the three attackers, side to move, folded by the board's symmetries) that predicts the mate distance; `eval = 1500 + (70 - predicted plies) * 20`. Integer inference, ~35k int16 weights, no probing of any table.
+- These scores are mate distances, so the search treats them like mate scores: they are shifted by ply (`kbnAdj` in `search.cpp`) and stored in the TT relative to the node. Without that, an entry from a deeper search (any entry carried over from an earlier move) outscores a fresh shallow one and the engine keeps repeating its old plan in the wrong-corner phase.
+
 ## Build
 
 Requires CMake 3.27+ and a C++20 compiler.
@@ -72,6 +78,23 @@ Runs `MagicBoard` through test positions checking board state, attack maps, lega
 cmake --build build --target test_board
 ./build/test_board
 ```
+
+### K+B+N vs K conversion
+
+`test/kbn_oracle.hpp` solves K+B+N vs K exactly (retrograde analysis, ~4 s) and is used only as a *test oracle and training teacher* -- the engine never links it. `kbn_verify` plays the real engine over UCI as the attacker against a defender that plays the exact optimal defence (or "sits": heads for the wrong-colour corner and shuffles), and reports how many games end in mate inside the 50-move rule.
+
+```bash
+cmake --build build --target kbn_verify
+./build/kbn_verify --engine ./build/chess_magic --nnue nnue/quantised.bin \
+    --set random --count 1000 --go "nodes 5000" --defender optimal      # fixed budget
+./build/kbn_verify ... --set corner --defender sitter --tc 2+0.01       # defender starts in the wrong corner, real clock
+./build/kbn_verify ... --set file:book/kbn_vs_k.epd                      # your own positions
+./build/kbn_verify --set selftest                                       # validates the oracle itself
+```
+
+Sets: `random`, `hard` (>= 57 plies from mate), `corner`, `file:<epd>`, `fen:<fen>`. Add `--trace` to see the true mate distance after every move of a failed game, `--min-rate` to turn it into a pass/fail check.
+
+To regenerate the net (deterministic, ~1 min): `cmake --build build --target kbn_train && ./build/kbn_train kbnNetWeights.hpp`. A stale `kbnNetWeights.hpp` fails to compile (`static_assert` on the feature layout).
 
 ## Usage
 

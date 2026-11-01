@@ -13,6 +13,7 @@
 #include "hash.cpp"
 #include "nnue.hpp"
 #include "endgameEval.hpp"
+#include "kbnEval.hpp"
 
 using namespace std;
 
@@ -925,7 +926,7 @@ public:
             // Mating types for the side with pieces:
             //   0 = draw (lone minor, or wrong rook pawn)
             //   1 = generic mate (drive king to any corner)
-            //   2 = KBN vs K (drive king to bishop-colour corner)
+            //   2 = KBN vs K (learned mate-distance net, see kbnEval.hpp)
             //   3 = wrong rook pawn draw (KBP where bishop can't cover promotion square)
             enum MatingType { DRAW = 0, GENERIC = 1, KBN_MATE = 2, WRONG_ROOK_PAWN = 3 };
 
@@ -991,13 +992,13 @@ public:
             else if (wType == GENERIC)
                 eval += EndgameEval::matingBonus(true, turn == WHITE, whiteKing, blackKing, allWhite, allBlack);
             else if (wType == KBN_MATE)  // override: NNUE has no data here
-                eval = EndgameEval::kbnMatingBonus(true, turn == WHITE, whiteKing, blackKing,
-                                                    whiteBishops, blackBishops, allWhite, allBlack, lightSquareMask);
+                eval = KbnEval::score(true, turn == WHITE, whiteKing, blackKing,
+                                      whiteBishops, blackBishops, whiteKnights, blackKnights);
             else if (bType == GENERIC)
                 eval += EndgameEval::matingBonus(false, turn == WHITE, whiteKing, blackKing, allWhite, allBlack);
             else if (bType == KBN_MATE)  // override: NNUE has no data here
-                eval = EndgameEval::kbnMatingBonus(false, turn == WHITE, whiteKing, blackKing,
-                                                    whiteBishops, blackBishops, allWhite, allBlack, lightSquareMask);
+                eval = KbnEval::score(false, turn == WHITE, whiteKing, blackKing,
+                                      whiteBishops, blackBishops, whiteKnights, blackKnights);
         }
 
         // K+minor vs K+pawns: the minor-piece side can never win (insufficient mating material).
@@ -1309,6 +1310,13 @@ public:
 
     bool isFiftyMoveDraw() const {
         return halfMoveClock >= 100;
+    }
+
+    // Exactly K+B+N against a bare king (either colour): four men, one bishop, one knight, both minors on one side.
+    bool isKbnVsK() const {
+        if (__builtin_popcountll(occupied) != 4 || !(whiteBishops | blackBishops) || !(whiteKnights | blackKnights)) return false;
+        const uint64_t minors = whiteBishops | blackBishops | whiteKnights | blackKnights;
+        return !(minors & allWhite) || !(minors & allBlack);
     }
 
     bool isKingPresent() {
